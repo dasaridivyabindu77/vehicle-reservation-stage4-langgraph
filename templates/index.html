@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>City Centre Vehicle Hub</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header>
+      <div class="brand-mark">VH</div>
+      <div><p class="eyebrow">CITY CENTRE</p><h1>Vehicle Hub Assistant</h1></div>
+      <button id="resetButton" type="button" class="secondary-button">Reset</button>
+    </header>
+    <section id="messages" class="messages" aria-live="polite">
+      <article class="message bot"><p>Hello! I can provide parking information and help reserve a space.</p></article>
+    </section>
+    <section id="adminPanel" class="admin-panel" hidden>
+      <div class="admin-heading">
+        <strong>Administrator requests</strong>
+        <button id="closeAdminButton" type="button" class="secondary-button">Close</button>
+      </div>
+      <div id="adminRequests"></div>
+    </section>
+    <div class="quick-actions" aria-label="Suggested questions">
+      <button type="button" data-message="Where is the parking facility?">Location</button>
+      <button type="button" data-message="How much is parking?">Prices</button>
+      <button type="button" data-message="Reserve a parking space">Reserve</button>
+      <button type="button" data-message="How do I cancel a booking?">Cancel</button>
+      <button id="adminButton" type="button">Administrator</button>
+    </div>
+    <form id="chatForm" class="composer">
+      <label for="messageInput" class="sr-only">Message</label>
+      <input id="messageInput" maxlength="1000" autocomplete="off" placeholder="Ask about parking or a reservation..." required>
+      <button id="sendButton" type="submit">Send</button>
+    </form>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
