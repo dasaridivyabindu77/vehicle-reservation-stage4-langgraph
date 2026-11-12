@@ -1,0 +1,62 @@
+[
+  {
+    "doc_id": "about",
+    "title": "About CityPark",
+    "category": "general",
+    "text": "CityPark is a secure downtown parking facility offering short-term and long-term parking for cars, motorcycles and electric vehicles. We have three zones: Zone A covered garage, Zone B open lot, and Zone C premium EV parking. The facility is staffed and monitored 24 hours a day."
+  },
+  {
+    "doc_id": "location",
+    "title": "Location and directions",
+    "category": "location",
+    "text": "CityPark is located at 15 Market Street, City Centre, next to Central Station. By car, take exit 4 from the ring road and follow signs for City Centre parking. By public transport, it is a two minute walk from Central Station and served by bus lines 12, 18 and 44. The entrance for vehicles is on Market Street; the pedestrian exit opens onto Station Square."
+  },
+  {
+    "doc_id": "booking-process",
+    "title": "How to reserve a parking space",
+    "category": "booking",
+    "text": "To reserve a parking space you provide your first name, last name, car licence plate number, and the reservation period with a start date and time and an end date and time. The chatbot collects these details step by step. Once submitted, the reservation is held as pending until a CityPark administrator confirms it. You will receive a confirmation with a reference number. Reservations can be made up to 30 days in advance."
+  },
+  {
+    "doc_id": "payment",
+    "title": "Payment methods",
+    "category": "payment",
+    "text": "CityPark accepts all major credit and debit cards, contactless payment, and mobile wallets such as Apple Pay and Google Pay. Cash is accepted only at the Zone B pay station. Payment is taken when you exit, or in advance for confirmed reservations. VAT receipts are available on request at the office."
+  },
+  {
+    "doc_id": "rules",
+    "title": "Parking rules and policy",
+    "category": "rules",
+    "text": "Drivers must park within the marked bays and display any permit on the dashboard. The maximum vehicle height in the Zone A covered garage is 2.1 metres; taller vehicles should use the Zone B open lot. The site speed limit is 10 kilometres per hour. CityPark is not liable for items left in unattended vehicles. Lost tickets are charged at the daily maximum rate."
+  },
+  {
+    "doc_id": "accessibility",
+    "title": "Accessible parking",
+    "category": "accessibility",
+    "text": "CityPark provides wide accessible parking bays close to the lifts in Zone A for drivers with a valid disabled badge. Accessible bays are free of charge for badge holders for up to three hours. Step-free access is available to all levels via two lifts, and the pedestrian routes are wheelchair friendly."
+  },
+  {
+    "doc_id": "ev-charging",
+    "title": "Electric vehicle charging",
+    "category": "ev",
+    "text": "Zone C offers electric vehicle charging with both type 2 and CCS connectors. There are fast 50 kilowatt chargers and standard 22 kilowatt chargers. Charging is billed per kilowatt hour on top of the parking fee. Zone A also has a small number of standard EV charging points near the entrance."
+  },
+  {
+    "doc_id": "security",
+    "title": "Security and safety",
+    "category": "security",
+    "text": "The facility is covered by CCTV cameras throughout and patrolled by security staff around the clock. Each level has emergency call points and good lighting. Help is available 24 hours a day from the office near the Zone B entrance. In an emergency, press any red call point to reach security immediately."
+  },
+  {
+    "doc_id": "cancellation",
+    "title": "Cancellation and refunds",
+    "category": "booking",
+    "text": "A confirmed reservation can be cancelled free of charge up to 24 hours before the start time for a full refund. Cancellations made within 24 hours are refunded at 50 percent. No-shows are not refunded. To cancel, contact the CityPark office with your reservation reference number."
+  },
+  {
+    "doc_id": "opening-note",
+    "title": "Opening hours overview",
+    "category": "hours",
+    "text": "CityPark vehicle entry and exit barriers operate during opening hours, which vary by day of the week. Confirmed reservations guarantee entry even near closing time. The exact opening and closing times for each day are shown live by the assistant."
+  }
+]

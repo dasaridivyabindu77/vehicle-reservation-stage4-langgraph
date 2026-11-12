@@ -1,0 +1,22 @@
+{
+  "on_topic": [
+    {"query": "where is CityPark located", "relevant": ["location"]},
+    {"query": "how do I get there by train or bus", "relevant": ["location"]},
+    {"query": "how do I reserve a parking space", "relevant": ["booking-process"]},
+    {"query": "can I cancel my reservation and get a refund", "relevant": ["cancellation"]},
+    {"query": "what payment methods do you accept", "relevant": ["payment"]},
+    {"query": "do you accept credit cards and contactless", "relevant": ["payment"]},
+    {"query": "is there electric vehicle charging", "relevant": ["ev-charging"]},
+    {"query": "what charging connectors do you have", "relevant": ["ev-charging"]},
+    {"query": "is there accessible parking for a disabled badge", "relevant": ["accessibility"]},
+    {"query": "is the car park secure and monitored", "relevant": ["security"]},
+    {"query": "what is the maximum vehicle height in the garage", "relevant": ["rules"]},
+    {"query": "tell me about CityPark and its zones", "relevant": ["about"]}
+  ],
+  "off_topic": [
+    {"query": "what is the capital of France"},
+    {"query": "give me a recipe for banana bread"},
+    {"query": "who won the football world cup"},
+    {"query": "what is the weather tomorrow"}
+  ]
+}

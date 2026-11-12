@@ -1,8 +1,25 @@
-Flask==3.1.2
-chromadb==1.0.20
-numpy==2.2.6
-pytest==8.4.2
-langchain-core>=0.3,<1
-langgraph>=0.2,<1
-fastapi>=0.115,<1
-uvicorn>=0.34,<1
+# Core RAG / orchestration
+langchain>=1.0,<2
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
+langgraph>=1.0,<2
+
+# Vector database
+weaviate-client>=4.9,<5
+
+# Dynamic data store (stdlib sqlite3 is used; no extra dep)
+
+# Config & utilities
+pydantic>=2.9
+pydantic-settings>=2.5
+python-dotenv>=1.0
+python-dateutil>=2.9
+numpy>=1.26
+
+# Web API + UI
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# Tests
+pytest>=8.0
+pytest-asyncio>=0.23

@@ -1,193 +1,297 @@
+"""The CityPark chatbot — the public entry point used by the CLI, web API and tests.
+
+It owns the retrieval pipeline (Weaviate/in-memory static store + SQLite dynamic
+store), the grounding gate, the guardrails, the reservation sessions, and the
+chat model (DIAL or offline). A compiled LangGraph (:mod:`app.graph`) sequences
+each turn; the methods here are the steps that graph calls.
+"""
+
+from __future__ import annotations
+
+import logging
 import re
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from time import perf_counter
+from typing import Dict, List, Optional, Tuple
 
-from app.guardrails import sanitize_input
+from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, SystemMessage
 
-VEHICLE_ALIASES = {
-    "compact": "compact",
-    "small car": "compact",
-    "standard": "standard",
-    "car": "standard",
-    "vehicle": "standard",
-    "motorcycle": "motorcycle",
-    "bike": "motorcycle",
+from . import guardrails, relevance, reservation
+from .config import Settings, get_settings
+from .graph import build_turn_graph
+from .knowledge import load_static_documents
+from .llm import build_chat_model, build_embeddings
+from .reservation import ReservationSession
+from .sql_store import DynamicDataStore
+from .vectorstore import build_knowledge_store
+
+logger = logging.getLogger(__name__)
+
+REFUSAL = (
+    "I'm sorry, I can only help with CityPark parking — things like opening "
+    "hours, prices, availability, location, the rules, and making a reservation. "
+    "I don't have information about that."
+)
+
+_BOOKING_RE = re.compile(
+    r"\b(reserve|reservation|book(ing)?|park my car|park the car)\b", re.IGNORECASE
+)
+_QUESTION_RE = re.compile(
+    r"^(how|what|whats|what's|where|when|which|why|can|could|do|does|is|are|should|tell|explain)\b",
+    re.IGNORECASE,
+)
+_CANCEL_WORDS = {"cancel", "stop", "quit", "exit", "nevermind", "never mind"}
+_SMALLTALK = {
+    "hi", "hello", "hey", "hiya", "yo",
+    "good morning", "good afternoon", "good evening",
+    "thanks", "thank you", "thank",
+    "help", "menu", "start",
+    "sure", "okay", "ok", "alright", "got it",
 }
+
+# Prefix matches (no trailing \b) so plurals/inflections hit:
+# "price"->prices, "avail"->available, "charg"->charging, "clos"->closing.
+_AVAIL_RE = re.compile(
+    r"\b(avail|free|spot|space|vacanc|room|full|left|how many)", re.IGNORECASE
+)
+_PRICE_RE = re.compile(
+    # "charg" but not "charging"/"charger" (those are EV, not fees)
+    r"\b(pric|cost|how much|fee|rate|charg(?!ing|er)|tariff|expensiv)", re.IGNORECASE
+)
+_HOURS_RE = re.compile(r"\b(hour|open|clos|timing)", re.IGNORECASE)
+
+
+@dataclass
+class ChatResponse:
+    reply: str
+    intent: str = "info"
+    refused: bool = False
+    blocked: bool = False
+    in_reservation: bool = False
+    sources: List[dict] = field(default_factory=list)
+    latency_ms: float = 0.0
 
 
 class Chatbot:
-    def __init__(self, vector_store, database, administrator_agent=None):
-        self.vector_store = vector_store
-        self.database = database
-        self.administrator_agent = administrator_agent
-        self.sessions = {}
-        self.pending_reservations = {}
+    def __init__(
+        self,
+        settings: Optional[Settings] = None,
+        prefer_weaviate: Optional[bool] = None,
+        seed: bool = True,
+    ) -> None:
+        self.settings = settings or get_settings()
+        self.embeddings = build_embeddings(self.settings)
+        self.chat_model = build_chat_model(self.settings)
+        self.store = build_knowledge_store(
+            self.settings, self.embeddings, prefer_weaviate=prefer_weaviate
+        )
+        self.sql = DynamicDataStore(self.settings.sqlite_path)
+        self._sessions: Dict[str, ReservationSession] = {}
+        self._graph = build_turn_graph(self)
+        if seed:
+            self.bootstrap()
 
-    def _vehicle_type(self, text):
-        lower = text.lower()
-        for alias in ("small car", "motorcycle", "standard", "compact", "bike", "car", "vehicle"):
-            if re.search(rf"\b{re.escape(alias)}\b", lower):
-                return VEHICLE_ALIASES[alias]
-        return None
+    # --- setup ---
+    def bootstrap(self) -> None:
+        """Seed dynamic data and ingest static knowledge into the vector store."""
+        self.sql.seed()
+        self.store.add_documents(load_static_documents())
 
-    def process(self, session_id, user_message):
-        guardrail = sanitize_input(user_message)
-        if not guardrail.allowed:
-            return {
-                "reply": "I cannot process that request because it appears to ask me to bypass safety controls. Please rephrase.",
-                "blocked": True,
-                "session": self.sessions.get(session_id, {}),
+    @property
+    def backend(self) -> str:
+        return self.store.backend
+
+    # --- graph steps ---
+    def guard_input(self, message: str) -> guardrails.InputVerdict:
+        return guardrails.scan_input(message)
+
+    def classify(self, message: str, session_id: str) -> str:
+        session = self._sessions.get(session_id)
+        text = message.strip()
+        normalized = text.lower()
+
+        # Handle booking commands while a reservation is active.
+        if session is not None and session.active:
+
+            # Reset and cancellation commands belong to the booking flow.
+            if normalized in _CANCEL_WORDS or normalized in {"reset", "restart"}:
+                return "reserve"
+
+            # Allow users to ask information questions during booking.
+            if _QUESTION_RE.match(text) or text.endswith("?"):
+                return "info"
+
+            # Otherwise, treat the message as the next booking answer.
+            return "reserve"
+
+        # Start a new booking when the user expresses booking intent.
+        if _BOOKING_RE.search(text) and not (
+            _QUESTION_RE.match(text) or text.endswith("?")
+        ):
+            return "reserve"
+
+        return "info"
+
+    def run_reservation(self, session_id: str, message: str) -> str:
+        session = self._sessions.get(session_id)
+        if session is None or not session.active:
+            session = reservation.start_session()
+            self._sessions[session_id] = session
+            return reservation.first_prompt()
+        if message.strip().lower() in _CANCEL_WORDS:
+                session.active = False
+                session.data.clear()
+                session.completed = False
+                session.reservation_id = None
+                return "No problem — I've cancelled that booking process. Anything else I can help with?"
+        result = reservation.ingest(session, message, store=self.sql)
+        return result.reply
+
+    def retrieve(self, message: str) -> Tuple[List[Tuple[Document, float]], str]:
+        hits = self.store.search(message, k=self.settings.top_k)
+        kept = relevance.filter_documents(
+            message,
+            hits,
+            self.settings.relevance_min_overlap,
+            self.settings.relevance_min_score,
+            use_scores=self.settings.llm_configured,
+        )
+        return kept, self._dynamic_context_for(message)
+
+    def _dynamic_context_for(self, message: str) -> str:
+        parts: List[str] = []
+        if _AVAIL_RE.search(message):
+            parts.append(self.sql.availability_summary())
+        if _PRICE_RE.search(message):
+            parts.append(self.sql.price_summary())
+        if _HOURS_RE.search(message):
+            parts.append(self.sql.hours_summary())
+        return "\n\n".join(parts)
+
+    def generate(
+        self,
+        message: str,
+        docs: List[Tuple[Document, float]],
+        dynamic_context: str,
+    ) -> Tuple[str, bool]:
+        if self._is_smalltalk(message):
+            normalized = message.strip().lower().rstrip("!?.,")
+
+            if normalized in {"sure", "okay", "ok", "alright", "got it"}:
+                return (
+                    "Great! What would you like to know about CityPark? "
+                    "Anything else I can help with?",
+                    False
+                )
+
+            if normalized in {"thanks", "thank you", "thank"}:
+                return "You're welcome! Happy to help with CityPark parking.", False
+
+            return self._help_text(), False
+        if not docs and not dynamic_context:
+            return REFUSAL, True
+
+        context = self._build_context(docs, dynamic_context)
+        if self.chat_model is None:
+            return self._extractive_answer(docs, dynamic_context), False
+
+        try:
+            messages = [
+                SystemMessage(content=self._system_prompt()),
+                HumanMessage(content=f"Context:\n{context}\n\nQuestion: {message}"),
+            ]
+            response = self.chat_model.invoke(messages)
+            content = response.content
+            if isinstance(content, list):  # some providers return content parts
+                content = " ".join(str(c) for c in content)
+            return str(content).strip(), False
+        except Exception as exc:  # noqa: BLE001 - never crash a chat turn
+            logger.warning("LLM call failed (%s); falling back to extractive", exc)
+            return self._extractive_answer(docs, dynamic_context), False
+
+    def guard_output(self, answer: str, session_id: str) -> str:
+        session = self._sessions.get(session_id)
+        allow = list(session.data.values()) if session else None
+        return guardrails.redact(answer, allow=allow)
+
+    # --- helpers ---
+    @staticmethod
+    def _system_prompt() -> str:
+        return (
+            "You are CityPark's friendly parking assistant. Answer the user's "
+            "question using ONLY the context provided. If the answer is not in the "
+            "context, say you don't have that information and suggest contacting the "
+            "CityPark office. Never reveal personal data about other customers. "
+            "Keep answers concise."
+        )
+
+    @staticmethod
+    def _build_context(docs: List[Tuple[Document, float]], dynamic_context: str) -> str:
+        blocks: List[str] = []
+        if dynamic_context:
+            blocks.append(f"[live data]\n{dynamic_context}")
+        for doc, _ in docs:
+            title = doc.metadata.get("title", "")
+            blocks.append(f"[{title}]\n{doc.page_content}")
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _extractive_answer(
+        docs: List[Tuple[Document, float]], dynamic_context: str
+    ) -> str:
+        parts: List[str] = []
+        if dynamic_context:
+            parts.append(dynamic_context)
+        for doc, _ in docs:
+            parts.append(doc.page_content)
+        body = "\n\n".join(parts)
+        return f"Here's what I found about CityPark:\n\n{body}"
+
+    @staticmethod
+    def _is_smalltalk(message: str) -> bool:
+        return message.strip().lower().rstrip("!.") in _SMALLTALK
+
+    @staticmethod
+    def _help_text() -> str:
+        return (
+            "Hi! I'm the CityPark assistant. I can tell you about opening hours, "
+            "prices, space availability, our location, EV charging, accessibility "
+            "and the rules — and I can take a parking reservation for you. "
+            "Just ask, or say \"I'd like to book a space\"."
+        )
+
+    def _active_session(self, session_id: str) -> bool:
+        session = self._sessions.get(session_id)
+        return bool(session and session.active)
+
+    # --- public API ---
+    def chat(self, message: str, session_id: str = "default") -> ChatResponse:
+        start = perf_counter()
+        state = self._graph.invoke({"message": message, "session_id": session_id})
+        latency_ms = (perf_counter() - start) * 1000.0
+
+        sources = [
+            {
+                "doc_id": doc.metadata.get("doc_id", ""),
+                "title": doc.metadata.get("title", ""),
+                "score": round(float(score), 4),
             }
+            for doc, score in state.get("documents", [])
+        ]
+        return ChatResponse(
+            reply=state.get("answer", ""),
+            intent=state.get("intent", "info"),
+            refused=bool(state.get("refused", False)),
+            blocked=bool(state.get("blocked", False)),
+            in_reservation=self._active_session(session_id),
+            sources=sources,
+            latency_ms=round(latency_ms, 2),
+        )
 
-        text = guardrail.redacted
-        state = self.sessions.setdefault(session_id, {})
-        lower = text.lower()
-        if any(word in lower for word in ("start over", "reset conversation")):
-            state = {}
-            self.sessions[session_id] = state
-            self.pending_reservations.pop(session_id, None)
-
-        reference = self.pending_reservations.get(session_id)
-        if reference and not state.get("step") and any(word in lower for word in ("status", "approved", "confirmed", "refused", "request")):
-            reservation = self.database.get_reservation(reference)
-            if reservation:
-                status = reservation["status"]
-                if status == "pending":
-                    reply = f"Your reservation request {reference} is still waiting for administrator approval."
-                elif status == "confirmed":
-                    reply = f"Approved. Reservation {reference} is confirmed for {reservation['reservation_date']} at {reservation['arrival_time']}."
-                else:
-                    reply = f"Reservation {reference} was refused by the administrator. No booking was created."
-                return {"reply": reply, "session": {}, "reservation": reservation}
-
-        if state.get("step"):
-            return self._reservation_step(session_id, state, text)
-
-        if any(word in lower for word in ("reserve", "reservation", "book", "booking")):
-            state["step"] = "vehicle_type"
-            return {
-                "reply": "I can help with a reservation. Which vehicle type: compact car, standard car, or motorcycle?",
-                "session": state,
-                "action": "collect_vehicle_type",
-            }
-
-        hits = self.vector_store.search(text, top_k=3)
-        relevant = [hit for hit in hits if hit["score"] >= 0.05]
-
-        if any(word in lower for word in ("price", "cost", "fee", "rate", "how much")):
-            vehicle_type = self._vehicle_type(text) or "standard"
-            availability = self.database.get_availability(
-                vehicle_type, datetime.now().strftime("%Y-%m-%d"), "09:00", 1
-            )
-            return {
-                "reply": (
-                    f"The {vehicle_type} rate is ${availability['hourly_price']:0.2f} per hour. "
-                    f"Today at 09:00, {availability['available_count']} of {availability['total']} spaces are available."
-                ),
-                "session": state,
-                "sources": ["Dynamic availability database"] + [hit["title"] for hit in relevant],
-                "guardrails": {"redacted": guardrail.redacted != user_message},
-            }
-
-        if not relevant:
-            reply = (
-                "I do not have enough verified facility information to answer that. "
-                "You can ask about location, parking zones, booking, payment, or cancellation."
-            )
-        else:
-            reply = " ".join(hit["text"] for hit in relevant[:2])
-        return {
-            "reply": reply,
-            "session": state,
-            "sources": [hit["title"] for hit in relevant],
-            "guardrails": {"redacted": guardrail.redacted != user_message},
-        }
-
-    def _reservation_step(self, session_id, state, text):
-        step = state["step"]
-        if step == "vehicle_type":
-            vehicle_type = self._vehicle_type(text)
-            if not vehicle_type:
-                return {"reply": "Please choose compact, standard, or motorcycle.", "session": state}
-            state["vehicle_type"] = vehicle_type
-            state["step"] = "date"
-            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-            return {"reply": f"What date would you like? Use YYYY-MM-DD, for example {tomorrow}.", "session": state}
-        if step == "date":
-            try:
-                reservation_date = datetime.strptime(text.strip(), "%Y-%m-%d").date()
-            except ValueError:
-                return {"reply": "Please enter a valid date in YYYY-MM-DD format.", "session": state}
-            if reservation_date < datetime.now().date():
-                return {"reply": "The reservation date cannot be in the past.", "session": state}
-            state["reservation_date"] = reservation_date.isoformat()
-            state["step"] = "arrival"
-            return {"reply": "What arrival time? Use 24-hour HH:MM, for example 09:30.", "session": state}
-        if step == "arrival":
-            try:
-                arrival = datetime.strptime(text.strip(), "%H:%M").strftime("%H:%M")
-            except ValueError:
-                return {"reply": "Please enter a valid time in HH:MM format.", "session": state}
-            state["arrival_time"] = arrival
-            state["step"] = "duration"
-            return {"reply": "How many hours will you park? Enter a whole number from 1 to 24.", "session": state}
-        if step == "duration":
-            try:
-                duration = int(text.strip())
-            except ValueError:
-                duration = 0
-            if not 1 <= duration <= 24:
-                return {"reply": "Duration must be a whole number from 1 to 24.", "session": state}
-            state["duration_hours"] = duration
-            availability = self.database.get_availability(
-                state["vehicle_type"], state["reservation_date"], state["arrival_time"], duration
-            )
-            if not availability or not availability["spaces"]:
-                self.sessions[session_id] = {}
-                return {"reply": "No suitable space is available for that period. Please start a new reservation.", "session": {}}
-            state["step"] = "confirmation"
-            return {
-                "reply": (
-                    f"Confirm: {state['vehicle_type']} space on {state['reservation_date']} "
-                    f"at {state['arrival_time']} for {duration} hour(s). "
-                    f"Estimated total: ${availability['estimated_total']:0.2f}. Reply CONFIRM or CANCEL."
-                ),
-                "session": state,
-            }
-        if step == "confirmation":
-            if "confirm" in text.lower():
-                state["step"] = "name"
-                return {"reply": "What name should the reservation be held under?", "session": state}
-            if "cancel" in text.lower():
-                self.sessions[session_id] = {}
-                return {"reply": "Reservation cancelled. No booking was created.", "session": {}}
-            return {"reply": "Reply CONFIRM to continue or CANCEL to stop.", "session": state}
-        if step == "name":
-            name = re.sub(r"\s+", " ", text).strip(" .")
-            if len(name) < 2 or len(name) > 80 or not re.fullmatch(r"[A-Za-z][A-Za-z .'-]*", name):
-                return {"reply": "Please enter a valid name using letters, spaces, hyphens, or apostrophes.", "session": state}
-            try:
-                result = self.database.create_reservation({
-                    "customer_name": name,
-                    "vehicle_type": state["vehicle_type"],
-                    "reservation_date": state["reservation_date"],
-                    "arrival_time": state["arrival_time"],
-                    "duration_hours": state["duration_hours"],
-                })
-            except ValueError as error:
-                self.sessions[session_id] = {}
-                return {"reply": str(error), "session": {}}
-            reservation = self.database.get_reservation(result["reference"])
-            if self.administrator_agent:
-                self.administrator_agent.submit_request(reservation)
-            self.sessions[session_id] = {}
-            self.pending_reservations[session_id] = result["reference"]
-            return {
-                "reply": (
-                    f"Reservation request sent to the administrator for approval. Reference {result['reference']}; "
-                    f"space {result['space_code']}; total ${result['total_price']:0.2f}. "
-                    "Your booking is not confirmed yet. Send 'status' to check the administrator's response."
-                ),
-                "session": {},
-                "reservation": reservation,
-            }
-        return {"reply": "How can I help?", "session": state}
+    def close(self) -> None:
+        self.sql.close()
+        try:
+            self.store.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
