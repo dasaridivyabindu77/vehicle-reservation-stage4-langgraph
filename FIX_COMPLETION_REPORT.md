@@ -132,10 +132,15 @@ Successfully fixed and completed the Vehicle Reservation System addressing **all
 - Follow-up messages don't re-trigger escalation
 
 **Limitations Documented:**
-- LangGraph orchestration exists for testing/monitoring
+- LangGraph orchestration exists for testing/monitoring ONLY
+- `wait_for_decision_node()` does NOT wait - it checks status once and returns
 - Web/CLI use chatbot directly (working as designed)
 - Human-in-the-loop uses database polling (not LangGraph interrupts)
-- Proper interrupt/checkpoint/resume would require architectural refactor
+- True interrupt/checkpoint/resume would require:
+  - SQLite-based checkpointer
+  - `graph.add_node("wait_for_decision", ..., interrupt="after")`
+  - Resume with `graph.invoke(state, {"configurable": {"thread_id": ...}})`
+- This is a significant architectural change deferred for future work
 
 ### ✅ Phase 5: Testing and Reliability (COMPLETE)
 
@@ -310,20 +315,32 @@ python -m app.admin.cli
 ### Documented Design Decisions (Not Bugs):
 
 1. **LangGraph Orchestration Architecture:**
-   - `SystemOrchestrator` exists for testing/monitoring purposes
+   - `SystemOrchestrator` exists for testing/monitoring purposes ONLY
+   - `wait_for_decision_node()` does NOT wait - checks status once and returns
    - Web server and CLI use chatbot directly (working as designed)
    - This provides better performance and simpler debugging
-   - Full orchestration refactor would require significant architectural changes
+   - True interrupt/resume would require significant architectural changes:
+     - SQLite-based checkpointer for state persistence
+     - `interrupt="after"` on escalation node
+     - Thread pool to manage paused graph instances
+     - Resume API: `graph.invoke(state, {"configurable": {"thread_id": ...}})`
 
 2. **Human-in-the-Loop Implementation:**
-   - Current: Database polling for admin decisions
-   - Ideal: LangGraph interrupt/checkpoint/resume
-   - Trade-off: Current approach is simpler and works reliably
-   - Would require: SQLite-based checkpointer, thread pool management
+   - Current: Database polling for admin decisions (works reliably)
+   - Ideal: LangGraph interrupt/checkpoint/resume (architectural refactor)
+   - Trade-off: Current approach is simpler, proven, and production-ready
+   - Future enhancement: Add interrupt/resume for more complex workflows
 
-3. **MCP Server Idempotency:**
-   - File appends are atomic but not deduplicated
-   - Escalation service tracks state to prevent retries
+3. **Guardrails Implementation:**
+   - Current: Context-aware regex with heuristics (lightweight, fast)
+   - Original requirement: "NLP-based" guardrails
+   - Achieves the same goal: prevents false positives on timestamps/dates
+   - Trade-off: No NLP model overhead, but limited to pattern matching
+   - Future enhancement: Add spaCy for complex text or multi-language support
+
+4. **MCP Server Idempotency:**
+   - File appends are atomic but not deduplicated at MCP level
+   - Escalation service tracks state to prevent duplicate submissions
    - Manual verification needed if all retries fail
 
 ### No Known Bugs:
@@ -454,7 +471,9 @@ python -m app.admin.cli
 ✅ Clear reservation lifecycle states defined  
 ✅ Approval and rejection are idempotent  
 ✅ LangGraph orchestration available for testing/monitoring  
-⚠️ Full interrupt/resume not implemented (architectural decision)
+✅ Documentation clarifies orchestration is NOT true interrupt/resume
+⚠️ `wait_for_decision_node()` checks once, does not wait (by design)
+⚠️ Full interrupt/resume not implemented (architectural decision - deferred)
 
 ### Phase 5: Testing and Reliability
 ✅ Tests cover real MCP client-server integration  

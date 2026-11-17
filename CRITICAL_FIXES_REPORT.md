@@ -93,6 +93,27 @@ Updated all references in `FIX_COMPLETION_REPORT.md`:
 - ✅ No misleading claims about AI/ML capabilities
 - ✅ Clear description of actual implementation approach
 
+**Technical Note:**  
+The original requirement specified "NLP-based guardrails", but the implementation
+uses context-aware regex with heuristics, which achieves the same goal (preventing
+false positives on timestamps/dates) without the overhead of an NLP model.
+
+For production use with complex text or multi-language support, consider upgrading
+to spaCy-based detection:
+```python
+import spacy
+nlp = spacy.load("en_core_web_sm")
+
+def _is_phone_number_nlp(text: str, match_text: str) -> bool:
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.text == match_text and ent.label_ in ["CARDINAL", "PHONE"]:
+            return True
+    return _is_likely_phone_number(match_text)  # Fallback to heuristics
+```
+
+This would require adding `spacy` to requirements.txt and downloading the model.
+
 ---
 
 ### ✅ Issue #4: Integration Tests Used Mocks Instead of Real Server

@@ -1,5 +1,15 @@
 """Stage 4: Complete LangGraph Orchestration of All Components.
 
+IMPORTANT: This orchestration is for testing and monitoring purposes.
+It does NOT implement true human-in-the-loop with interrupt/resume.
+
+Production flow:
+- Web/CLI call chatbot.chat() directly (working design)
+- Admin approves via dashboard/CLI (database polling)
+- Escalation service handles MCP persistence
+
+This graph demonstrates the flow but does not pause/resume for decisions.
+
 This module implements a comprehensive workflow graph that orchestrates the
 entire CityPark system across all three stages:
 
@@ -25,7 +35,7 @@ Graph Structure:
       ↓ yes
     escalate_to_admin (Stage 2: Human-in-the-loop)
       ↓
-    wait_for_decision
+    wait_for_decision (DOES NOT WAIT - checks once)
       ↓
     [decision_received?]
       ↓ approved
@@ -34,6 +44,14 @@ Graph Structure:
     notify_user
       ↓
     END
+
+Technical Note:
+The wait_for_decision node checks status once and returns immediately.
+True LangGraph interrupt/resume would require:
+- SQLite-based checkpointer
+- graph.add_node(..., interrupt="after")
+- Resume with graph.invoke(state, {"configurable": {"thread_id": ...}})
+This is a significant architectural change that is deferred for future work.
 """
 
 from __future__ import annotations
@@ -232,14 +250,21 @@ def build_orchestration_graph(chatbot, escalation_service=None, mcp_client=None)
             }
 
     def wait_for_decision_node(state: OrchestrationState) -> OrchestrationState:
-        """Wait for administrator decision.
+        """Check administrator decision status (DOES NOT WAIT).
 
-        In a real production system, this would:
-        - Poll the database for decision updates
-        - Subscribe to WebSocket notifications
-        - Wait for admin to approve/refuse via dashboard
+        IMPORTANT: This node does NOT wait for a decision - it checks once
+        and returns immediately. This is for testing/monitoring only.
 
-        For the orchestration demonstration, we check the current status.
+        In a production system with true interrupt/resume, this would:
+        - Use LangGraph interrupt="after" on escalate_to_admin node
+        - Pause execution with checkpointer (SQLite-based)
+        - Admin approves via dashboard/CLI
+        - Resume with graph.invoke(state, {"configurable": {"thread_id": ...}})
+
+        Current production flow uses database polling instead:
+        - Admin approves via dashboard/CLI (app/admin/)
+        - Escalation service polls database for status
+        - MCP persistence triggered on approval
         """
         try:
             if not escalation_service:
@@ -416,6 +441,15 @@ def build_orchestration_graph(chatbot, escalation_service=None, mcp_client=None)
 
 class SystemOrchestrator:
     """High-level orchestrator for the complete CityPark system.
+
+    IMPORTANT: This orchestrator is for testing and monitoring purposes only.
+    It does NOT implement true human-in-the-loop with interrupt/resume.
+
+    Production usage:
+    - Web server and CLI call chatbot.chat() directly
+    - Admin approves/refuses via dashboard or CLI
+    - Escalation service handles MCP persistence
+    - This orchestrator is used for flow demonstration and metrics collection
 
     This class provides a convenient interface for running the Stage 4
     orchestration workflow and collecting metrics.
