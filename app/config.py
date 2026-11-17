@@ -18,12 +18,35 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # --- EPAM DIAL (Azure-OpenAI compatible) ---
+    # --- LLM Provider Configuration ---
+    llm_provider: str = "dial"  # "dial" or "openai"
+
+    # EPAM DIAL (Azure-OpenAI compatible)
     dial_api_key: str = ""
     dial_endpoint: str = "https://ai-proxy.lab.epam.com"
     dial_api_version: str = "2024-02-01"
-    chat_model: str = "gpt-4o"
-    embedding_model: str = "text-embedding-3-small-1"
+    dial_chat_model: str = "gpt-4o"
+    dial_embedding_model: str = "text-embedding-3-small-1"
+
+    # Standard OpenAI
+    openai_api_key: str = ""
+    openai_chat_model: str = "gpt-4o"
+    openai_embedding_model: str = "text-embedding-3-small"
+
+    # Legacy aliases for backward compatibility
+    @property
+    def chat_model(self) -> str:
+        """Backward compatibility: returns the appropriate model name."""
+        if self.llm_provider == "openai":
+            return self.openai_chat_model
+        return self.dial_chat_model
+
+    @property
+    def embedding_model(self) -> str:
+        """Backward compatibility: returns the appropriate model name."""
+        if self.llm_provider == "openai":
+            return self.openai_embedding_model
+        return self.dial_embedding_model
 
     # --- Weaviate ---
     weaviate_url: str = "http://localhost:8080"
@@ -61,8 +84,40 @@ class Settings(BaseSettings):
 
     @property
     def llm_configured(self) -> bool:
-        """True when a real DIAL key is present (i.e. not offline mode)."""
+        """True when a real API key is present (i.e. not offline mode)."""
+        provider = self.llm_provider.lower().strip()
+        if provider == "openai":
+            return bool(self.openai_api_key.strip())
+        # Default to DIAL
         return bool(self.dial_api_key.strip())
+
+    def validate_configuration(self) -> list[str]:
+        """Validate LLM configuration and return list of errors."""
+        errors = []
+        provider = self.llm_provider.lower().strip()
+
+        if provider not in ("dial", "openai", ""):
+            errors.append(f"Invalid LLM_PROVIDER '{self.llm_provider}'. Must be 'dial' or 'openai'.")
+
+        if self.llm_configured:
+            if provider == "openai":
+                if not self.openai_api_key.strip():
+                    errors.append("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+                if not self.openai_chat_model.strip():
+                    errors.append("OPENAI_CHAT_MODEL is required when using OpenAI provider")
+                if not self.openai_embedding_model.strip():
+                    errors.append("OPENAI_EMBEDDING_MODEL is required when using OpenAI provider")
+            else:  # dial
+                if not self.dial_api_key.strip():
+                    errors.append("DIAL_API_KEY is required when LLM_PROVIDER=dial")
+                if not self.dial_endpoint.strip():
+                    errors.append("DIAL_ENDPOINT is required when using DIAL provider")
+                if not self.dial_chat_model.strip():
+                    errors.append("DIAL_CHAT_MODEL is required when using DIAL provider")
+                if not self.dial_embedding_model.strip():
+                    errors.append("DIAL_EMBEDDING_MODEL is required when using DIAL provider")
+
+        return errors
 
     @property
     def email_configured(self) -> bool:

@@ -43,6 +43,22 @@ def get_bot() -> Chatbot:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Validate configuration before starting
+    settings = get_settings()
+    config_errors = settings.validate_configuration()
+    if config_errors:
+        logger.error("Configuration validation failed:")
+        for error in config_errors:
+            logger.error("  - %s", error)
+        raise RuntimeError(f"Invalid configuration: {'; '.join(config_errors)}")
+
+    if settings.llm_configured:
+        provider = settings.llm_provider.upper()
+        model = settings.chat_model
+        logger.info("LLM provider: %s (model: %s)", provider, model)
+    else:
+        logger.info("LLM provider: OFFLINE mode (no API key configured)")
+
     # Warm the bot once at startup so the first request isn't a cold network build.
     try:
         get_bot()
