@@ -1,11 +1,32 @@
 from langchain_core.documents import Document
 
-from app.relevance import content_words, filter_documents, is_relevant, lexical_overlap
+from app.relevance import content_words, filter_documents, is_relevant, lexical_overlap, _words_match
 
 
 def test_lexical_overlap_ignores_stopwords():
     assert lexical_overlap("what are the opening hours", "our opening hours vary") > 0.5
     assert content_words("the and of a") == set()
+
+
+def test_fuzzy_word_matching():
+    """Test that word variations match (e.g., located matches location)."""
+    assert _words_match("location", "located") is True
+    assert _words_match("located", "location") is True
+    assert _words_match("book", "booking") is True
+    # "reserve" vs "reservation" share common prefix but aren't close enough for current algorithm
+    # Non-matches
+    assert _words_match("price", "open") is False
+
+
+def test_overlap_with_word_variations():
+    """Test that overlap works with word variations."""
+    # "located" should match "location"
+    overlap = lexical_overlap("where are you located", "Location and directions")
+    assert overlap > 0.0, "Should match 'located' with 'location'"
+
+    # "booking" should match "book"
+    overlap = lexical_overlap("how to make a booking", "How to book a space")
+    assert overlap > 0.0, "Should match 'booking' with 'book'"
 
 
 def test_is_relevant_passes_on_overlap_and_fails_off_topic():

@@ -224,7 +224,15 @@ class Chatbot:
         return reply
 
     def retrieve(self, message: str) -> Tuple[List[Tuple[Document, float]], str]:
-        hits = self.store.search(message, k=self.settings.top_k)
+        # Primary retrieval via vector search
+        k = self.settings.top_k
+
+        # In offline mode (weak embeddings), retrieve more candidates to ensure
+        # we don't miss relevant documents due to poor semantic matching
+        if not self.settings.llm_configured:
+            k = min(k * 2, 10)
+
+        hits = self.store.search(message, k=k)
         kept = relevance.filter_documents(
             message,
             hits,

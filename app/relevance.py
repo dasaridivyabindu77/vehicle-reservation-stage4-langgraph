@@ -40,13 +40,55 @@ def content_words(text: str) -> set:
     return {t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS and len(t) > 1}
 
 
+def _normalize_word(word: str) -> str:
+    """Simple normalization: remove common suffixes for better matching."""
+    # Common suffixes
+    for suffix in ['ed', 'ing', 's', 'es', 'ion', 'ions']:
+        if word.endswith(suffix) and len(word) > len(suffix) + 2:
+            return word[:-len(suffix)]
+    return word
+
+
+def _words_match(word1: str, word2: str) -> bool:
+    """Check if two words match, accounting for common variations."""
+    # Exact match
+    if word1 == word2:
+        return True
+
+    # Normalized match (location <-> located)
+    norm1 = _normalize_word(word1)
+    norm2 = _normalize_word(word2)
+
+    if norm1 == norm2:
+        return True
+
+    # Prefix match for longer words (locat matches location, located, etc)
+    if len(norm1) >= 4 and len(norm2) >= 4:
+        if norm1.startswith(norm2) or norm2.startswith(norm1):
+            return True
+
+    return False
+
+
 def lexical_overlap(query: str, document: str) -> float:
-    """Fraction of the query's content words that appear in the document."""
+    """Fraction of the query's content words that appear in the document.
+
+    Uses fuzzy matching to handle word variations (e.g., "located" matches "location").
+    """
     q = content_words(query)
     if not q:
         return 0.0
     d = content_words(document)
-    return len(q & d) / len(q)
+
+    # Count matches using fuzzy word matching
+    matches = 0
+    for q_word in q:
+        for d_word in d:
+            if _words_match(q_word, d_word):
+                matches += 1
+                break  # Count each query word at most once
+
+    return matches / len(q)
 
 
 def is_relevant(
