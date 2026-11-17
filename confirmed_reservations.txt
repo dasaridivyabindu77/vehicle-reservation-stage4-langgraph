@@ -1,2 +1,5 @@
-Divya Bindu | HFJD546 | 2026-11-13T08:30 to 2026-11-13T18:30 | 2026-11-12T11:19:21+00:00
-Divya Ggi | FH465 | 2026-11-13T08:30 to 2026-11-13T18:30 | 2026-11-12T12:04:46+00:00
+# This file contains confirmed reservation data
+# Format: Name | Car Number | Reservation Period | Approval Time
+# This is a test/demo file - real production data should be in .gitignore
+Alice Anderson | TEST-001 | 2026-11-20T10:00:00 to 2026-11-20T18:00:00 | 2026-11-15T09:00:00Z
+Bob Brown | TEST-002 | 2026-11-21T14:00:00 to 2026-11-21T18:00:00 | 2026-11-15T10:30:00Z

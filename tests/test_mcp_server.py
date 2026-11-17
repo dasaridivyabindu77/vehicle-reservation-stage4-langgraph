@@ -37,14 +37,35 @@ def test_file(tmp_path):
 
 @pytest.fixture
 def client():
-    """FastAPI test client."""
-    return TestClient(app)
+    """FastAPI test client with authentication configured."""
+    # Set a test token for authentication
+    os.environ["MCP_SERVER_TOKEN"] = "test-token-for-pytest"
+
+    # Reload the server module to pick up the token
+    import importlib
+    import mcp_server.server as server_module
+    importlib.reload(server_module)
+
+    test_client = TestClient(server_module.app)
+
+    yield test_client
+
+    # Cleanup
+    if "MCP_SERVER_TOKEN" in os.environ:
+        del os.environ["MCP_SERVER_TOKEN"]
+    importlib.reload(server_module)
+
+
+@pytest.fixture
+def auth_headers():
+    """Authentication headers for test requests."""
+    return {"X-MCP-Token": "test-token-for-pytest"}
 
 
 @pytest.fixture
 def mcp_client():
-    """MCP client without authentication for testing."""
-    return MCPClient(token="")
+    """MCP client with authentication for testing."""
+    return MCPClient(token="test-token-for-pytest")
 
 
 def test_health_check(client):
@@ -57,9 +78,9 @@ def test_health_check(client):
     assert "file_path" in data
 
 
-def test_list_tools(client):
+def test_list_tools(client, auth_headers):
     """Test MCP tools listing."""
-    response = client.get("/tools/list")
+    response = client.get("/tools/list", headers=auth_headers)
     assert response.status_code == 200
     data = response.json()
     assert "tools" in data
@@ -70,7 +91,7 @@ def test_list_tools(client):
     assert "read_confirmed_reservations" in tool_names
 
 
-def test_write_confirmed_reservation(client, test_file):
+def test_write_confirmed_reservation(client, auth_headers, test_file):
     """Test writing a confirmed reservation."""
     payload = {
         "reservation_id": 1,
@@ -83,7 +104,7 @@ def test_write_confirmed_reservation(client, test_file):
         "approval_time": "2026-11-12T16:00:00Z",
     }
 
-    response = client.post("/tools/call/write_confirmed_reservation", json=payload)
+    response = client.post("/tools/call/write_confirmed_reservation", json=payload, headers=auth_headers)
     assert response.status_code == 200
 
     data = response.json()
@@ -99,7 +120,7 @@ def test_write_confirmed_reservation(client, test_file):
     assert "2026-11-12T16:00:00Z" in content
 
 
-def test_write_multiple_reservations(client, test_file):
+def test_write_multiple_reservations(client, auth_headers, test_file):
     """Test writing multiple reservations."""
     reservations = [
         {
@@ -121,7 +142,7 @@ def test_write_multiple_reservations(client, test_file):
     ]
 
     for res in reservations:
-        response = client.post("/tools/call/write_confirmed_reservation", json=res)
+        response = client.post("/tools/call/write_confirmed_reservation", json=res, headers=auth_headers)
         assert response.status_code == 200
 
     # Verify both are in the file
@@ -136,9 +157,9 @@ def test_write_multiple_reservations(client, test_file):
     assert len(lines) == 2
 
 
-def test_read_confirmed_reservations_empty(client, test_file):
+def test_read_confirmed_reservations_empty(client, auth_headers, test_file):
     """Test reading when no reservations exist."""
-    response = client.post("/tools/call/read_confirmed_reservations", json={})
+    response = client.post("/tools/call/read_confirmed_reservations", headers=auth_headers, json={})
     assert response.status_code == 200
 
     data = response.json()
@@ -147,7 +168,7 @@ def test_read_confirmed_reservations_empty(client, test_file):
     assert len(data["entries"]) == 0
 
 
-def test_read_confirmed_reservations(client, test_file):
+def test_read_confirmed_reservations(client, auth_headers, test_file):
     """Test reading confirmed reservations."""
     # Write some reservations first
     payload = {
@@ -159,10 +180,10 @@ def test_read_confirmed_reservations(client, test_file):
         "end_ts": "2026-11-20T18:00:00",
     }
 
-    client.post("/tools/call/write_confirmed_reservation", json=payload)
+    client.post("/tools/call/write_confirmed_reservation", json=payload, headers=auth_headers)
 
     # Read them back
-    response = client.post("/tools/call/read_confirmed_reservations", json={})
+    response = client.post("/tools/call/read_confirmed_reservations", headers=auth_headers, json={})
     assert response.status_code == 200
 
     data = response.json()
@@ -172,7 +193,7 @@ def test_read_confirmed_reservations(client, test_file):
     assert "Charlie Brown" in data["entries"][0]
 
 
-def test_reservations_summary(client, test_file):
+def test_reservations_summary(client, auth_headers, test_file):
     """Test the summary endpoint."""
     # Write a reservation
     payload = {
@@ -184,9 +205,9 @@ def test_reservations_summary(client, test_file):
         "end_ts": "2026-11-25T18:00:00",
     }
 
-    client.post("/tools/call/write_confirmed_reservation", json=payload)
+    client.post("/tools/call/write_confirmed_reservation", json=payload, headers=auth_headers)
 
-    response = client.get("/reservations")
+    response = client.get("/reservations", headers=auth_headers)
     assert response.status_code == 200
 
     data = response.json()
@@ -220,7 +241,7 @@ def test_authentication_with_token():
     importlib.reload(server_module)
 
 
-def test_format_compliance(client, test_file):
+def test_format_compliance(client, auth_headers, test_file):
     """Test that the file format matches Stage 3 requirements."""
     # Required format: Name | Car Number | Reservation Period | Approval Time
     payload = {
@@ -233,7 +254,7 @@ def test_format_compliance(client, test_file):
         "approval_time": "2026-11-12T20:00:00Z",
     }
 
-    response = client.post("/tools/call/write_confirmed_reservation", json=payload)
+    response = client.post("/tools/call/write_confirmed_reservation", json=payload, headers=auth_headers)
     assert response.status_code == 200
 
     content = test_file.read_text().strip()
@@ -302,3 +323,167 @@ def test_mcp_client_write_operation(monkeypatch):
 
     assert result["success"] is True
     assert result["entry_count"] == 1
+
+
+# --- Phase 3 Security Tests ---
+
+def test_missing_token_rejected():
+    """Test that requests without tokens are rejected when auth is required."""
+    os.environ["MCP_SERVER_TOKEN"] = "test-secret"
+    
+    import importlib
+    import mcp_server.server as server_module
+    importlib.reload(server_module)
+    
+    client = TestClient(server_module.app)
+    
+    # No token header
+    response = client.get("/tools/list")
+    assert response.status_code == 401
+    assert "missing" in response.json()["detail"].lower()
+    
+    # Empty token
+    response = client.get("/tools/list", headers={"X-MCP-Token": ""})
+    assert response.status_code == 401
+    
+    # Whitespace token
+    response = client.get("/tools/list", headers={"X-MCP-Token": "   "})
+    assert response.status_code == 401
+    
+    del os.environ["MCP_SERVER_TOKEN"]
+    importlib.reload(server_module)
+
+
+def test_invalid_token_rejected():
+    """Test that invalid tokens are rejected."""
+    os.environ["MCP_SERVER_TOKEN"] = "correct-secret"
+    
+    import importlib
+    import mcp_server.server as server_module
+    importlib.reload(server_module)
+    
+    client = TestClient(server_module.app)
+    
+    # Wrong token
+    response = client.get("/tools/list", headers={"X-MCP-Token": "wrong-secret"})
+    assert response.status_code == 401
+    assert "invalid" in response.json()["detail"].lower()
+    
+    del os.environ["MCP_SERVER_TOKEN"]
+    importlib.reload(server_module)
+
+
+def test_no_server_token_configured():
+    """Test that server rejects requests when no token is configured."""
+    # Make sure no token is set
+    if "MCP_SERVER_TOKEN" in os.environ:
+        del os.environ["MCP_SERVER_TOKEN"]
+    
+    import importlib
+    import mcp_server.server as server_module
+    importlib.reload(server_module)
+    
+    client = TestClient(server_module.app)
+    
+    # Should get 503 (service unavailable) not 200
+    response = client.get("/tools/list")
+    assert response.status_code == 503
+    assert "configuration" in response.json()["detail"].lower()
+    
+    importlib.reload(server_module)
+
+
+def test_newline_injection_prevented(test_file):
+    """Test that newline injection in fields is prevented."""
+    os.environ["MCP_SERVER_TOKEN"] = "test-token"
+    
+    import importlib
+    import mcp_server.server as server_module
+    importlib.reload(server_module)
+    server_module.RESERVATIONS_FILE = test_file
+    
+    client = TestClient(server_module.app)
+    
+    # Try to inject newline in first name
+    payload = {
+        "reservation_id": 1,
+        "first_name": "John\nMalicious",
+        "last_name": "Doe",
+        "car_number": "ABC-123",
+        "start_ts": "2026-11-15T10:00:00",
+        "end_ts": "2026-11-15T18:00:00",
+    }
+    
+    response = client.post(
+        "/tools/call/write_confirmed_reservation",
+        json=payload,
+        headers={"X-MCP-Token": "test-token"}
+    )
+    assert response.status_code == 422  # Validation error
+    
+    del os.environ["MCP_SERVER_TOKEN"]
+    importlib.reload(server_module)
+
+
+def test_delimiter_injection_prevented(test_file):
+    """Test that pipe delimiter injection is prevented."""
+    os.environ["MCP_SERVER_TOKEN"] = "test-token"
+    
+    import importlib
+    import mcp_server.server as server_module
+    importlib.reload(server_module)
+    server_module.RESERVATIONS_FILE = test_file
+    
+    client = TestClient(server_module.app)
+    
+    # Try to inject delimiter in car number
+    payload = {
+        "reservation_id": 1,
+        "first_name": "John",
+        "last_name": "Doe",
+        "car_number": "ABC|EXTRA|DATA",
+        "start_ts": "2026-11-15T10:00:00",
+        "end_ts": "2026-11-15T18:00:00",
+    }
+    
+    response = client.post(
+        "/tools/call/write_confirmed_reservation",
+        json=payload,
+        headers={"X-MCP-Token": "test-token"}
+    )
+    assert response.status_code == 422  # Validation error
+    
+    del os.environ["MCP_SERVER_TOKEN"]
+    importlib.reload(server_module)
+
+
+def test_invalid_car_number_format(test_file):
+    """Test that invalid car number formats are rejected."""
+    os.environ["MCP_SERVER_TOKEN"] = "test-token"
+    
+    import importlib
+    import mcp_server.server as server_module
+    importlib.reload(server_module)
+    server_module.RESERVATIONS_FILE = test_file
+    
+    client = TestClient(server_module.app)
+    
+    # Try special characters
+    payload = {
+        "reservation_id": 1,
+        "first_name": "John",
+        "last_name": "Doe",
+        "car_number": "ABC-123; DROP TABLE",
+        "start_ts": "2026-11-15T10:00:00",
+        "end_ts": "2026-11-15T18:00:00",
+    }
+    
+    response = client.post(
+        "/tools/call/write_confirmed_reservation",
+        json=payload,
+        headers={"X-MCP-Token": "test-token"}
+    )
+    assert response.status_code == 422  # Validation error
+    
+    del os.environ["MCP_SERVER_TOKEN"]
+    importlib.reload(server_module)

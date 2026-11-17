@@ -108,29 +108,83 @@ class EscalationService:
 
         # Stage 3: Write confirmed reservation to file via MCP server
         if decision.status == STATUS_CONFIRMED and self.mcp_client:
-            try:
-                result = self.mcp_client.write_confirmed_reservation(
-                    reservation_id=updated.id,
-                    first_name=updated.first_name,
-                    last_name=updated.last_name,
-                    car_number=updated.car_number,
-                    start_ts=updated.start_ts,
-                    end_ts=updated.end_ts,
-                    approved_by=decided_by,
-                    approval_time=updated.decided_at,
-                )
-                logger.info(
-                    "Stage 3: Wrote confirmed reservation #%s to file: %s",
-                    reservation_id,
-                    result.get("file_path"),
-                )
-            except Exception as e:
-                # Non-fatal: log the error but don't fail the decision
-                logger.error(
-                    "Stage 3: Failed to write reservation #%s to MCP server: %s",
-                    reservation_id,
-                    e,
-                    exc_info=True,
-                )
+            self._persist_to_mcp_with_retry(updated, decided_by)
 
         return updated, decision
+
+    def _persist_to_mcp_with_retry(
+        self,
+        reservation: Reservation,
+        decided_by: str,
+        max_retries: int = 3,
+    ) -> None:
+        """Write confirmed reservation to MCP server with retry logic.
+
+        This method implements a simple retry mechanism for temporary failures.
+        If all retries fail, the error is logged but the approval is not rolled back.
+        The persistence operation is idempotent, so retries are safe.
+
+        Args:
+            reservation: The confirmed reservation to persist
+            decided_by: Administrator who approved
+            max_retries: Maximum number of retry attempts (default: 3)
+        """
+        import time
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                result = self.mcp_client.write_confirmed_reservation(
+                    reservation_id=reservation.id,
+                    first_name=reservation.first_name,
+                    last_name=reservation.last_name,
+                    car_number=reservation.car_number,
+                    start_ts=reservation.start_ts,
+                    end_ts=reservation.end_ts,
+                    approved_by=decided_by,
+                    approval_time=reservation.decided_at,
+                )
+                logger.info(
+                    "Stage 3: Wrote confirmed reservation #%s to file: %s (attempt %d/%d)",
+                    reservation.id,
+                    result.get("file_path"),
+                    attempt + 1,
+                    max_retries,
+                )
+                return  # Success!
+
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 0.5s, 1s, 2s
+                    delay = 0.5 * (2 ** attempt)
+                    logger.warning(
+                        "Stage 3: Failed to write reservation #%s (attempt %d/%d), "
+                        "retrying in %.1fs: %s",
+                        reservation.id,
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        e,
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        "Stage 3: Failed to write reservation #%s after %d attempts: %s",
+                        reservation.id,
+                        max_retries,
+                        e,
+                        exc_info=True,
+                    )
+
+        # All retries exhausted - log critical error
+        # The approval is NOT rolled back because the database state is correct
+        # An administrator can manually verify and re-trigger persistence if needed
+        logger.critical(
+            "Stage 3: MCP persistence FAILED for reservation #%s after %d retries. "
+            "Database shows status=confirmed but file may not be written. "
+            "Manual intervention may be required. Last error: %s",
+            reservation.id,
+            max_retries,
+            last_error,
+        )

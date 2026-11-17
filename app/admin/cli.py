@@ -26,7 +26,24 @@ def main() -> int:
     sql = DynamicDataStore(settings.sqlite_path)
     chat_model = build_chat_model(settings)
     agent = AdminAgent(settings, chat_model)
-    escalation = EscalationService(sql, agent)
+
+    # Stage 3: Initialize MCP client if configured
+    mcp_client = None
+    if settings.mcp_configured:
+        try:
+            from mcp_server.client import MCPClient
+            mcp_client = MCPClient(
+                base_url=settings.mcp_server_url,
+                token=settings.mcp_server_token,
+            )
+            if mcp_client.is_available():
+                print("Stage 3: MCP server connected for file persistence")
+            else:
+                print("Stage 3: MCP server configured but not reachable")
+        except Exception as e:
+            print(f"Stage 3: Failed to initialize MCP client: {e}")
+
+    escalation = EscalationService(sql, agent, mcp_client)
 
     print("CityPark Administrator CLI")
     mode = "DIAL" if settings.llm_configured else "offline"

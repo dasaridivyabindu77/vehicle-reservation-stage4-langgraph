@@ -12,3 +12,8 @@ env/
 eval/reports/
 .coverage
 htmlcov/
+
+# Stage 3: MCP server files with real customer data
+# Keep confirmed_reservations.txt in git with synthetic test data only
+# Production deployments should create this file outside version control
+confirmed_reservations_*.txt
