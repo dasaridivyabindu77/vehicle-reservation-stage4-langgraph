@@ -11,6 +11,7 @@ Run with: pytest tests/test_load.py -v -s
 import time
 import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
 import pytest
@@ -20,6 +21,21 @@ from app.config import Settings
 from app.admin.agent import AdminAgent
 from app.admin.escalation import EscalationService
 from app.orchestration import SystemOrchestrator
+
+
+def _get_future_datetime(days_ahead: int, hour: int = 10, minute: int = 0) -> str:
+    """Generate a future datetime string for testing.
+
+    Args:
+        days_ahead: Number of days in the future
+        hour: Hour of day (0-23)
+        minute: Minute (0-59)
+
+    Returns:
+        Formatted datetime string: "YYYY-MM-DD HH:MM"
+    """
+    future_date = datetime.now() + timedelta(days=days_ahead)
+    return future_date.strftime(f"%Y-%m-%d {hour:02d}:{minute:02d}")
 
 
 @pytest.fixture
@@ -132,13 +148,17 @@ def test_reservation_workflow_load(orchestrator):
 
     num_reservations = 20
 
+    # Use dynamic future dates (7 days ahead)
+    start_time_str = _get_future_datetime(days_ahead=7, hour=10, minute=0)
+    end_time_str = _get_future_datetime(days_ahead=7, hour=18, minute=0)
+
     reservation_conversations = [
         "I'd like to book a parking spot",
         "Alice",
         "Smith",
         "ABC-123",
-        "2026-11-20 10:00",
-        "2026-11-20 18:00",
+        start_time_str,
+        end_time_str,
     ]
 
     def complete_reservation(res_id: int) -> Dict[str, Any]:
@@ -221,14 +241,19 @@ def test_stage_performance_breakdown(orchestrator):
     # Test Stage 2: Escalation
     print("\n🔹 Stage 2: Administrator Escalation")
     stage2_durations = []
+
+    # Use dynamic future dates for reservations
+    start_ts = _get_future_datetime(days_ahead=10, hour=10, minute=0).replace(" ", "T") + ":00"
+    end_ts = _get_future_datetime(days_ahead=10, hour=18, minute=0).replace(" ", "T") + ":00"
+
     for i in range(num_iterations):
         # Create a test reservation
         res_id = orchestrator.chatbot.sql.create_reservation(
             first_name="Test",
             last_name="User",
             car_number=f"TEST-{i}",
-            start_ts="2026-11-20T10:00:00",
-            end_ts="2026-11-20T18:00:00",
+            start_ts=start_ts,
+            end_ts=end_ts,
             session_id=f"stage2-test-{i}",
         )
 

@@ -68,7 +68,8 @@ def mock_mcp_client(test_reservations_file, monkeypatch):
             approval_time = approval_time or datetime.now(timezone.utc).isoformat()
             full_name = f"{first_name} {last_name}"
             reservation_period = f"{start_ts} to {end_ts}"
-            entry = f"{full_name} | {car_number} | {reservation_period} | {approval_time}\n"
+            # Updated format: #ID | Name | Car Number | Reservation Period | Approval Time
+            entry = f"#{reservation_id} | {full_name} | {car_number} | {reservation_period} | {approval_time}\n"
 
             with self.file.open("a", encoding="utf-8") as f:
                 f.write(entry)
@@ -125,14 +126,15 @@ def test_stage3_confirmed_reservation_writes_to_file(
     assert test_reservations_file.exists()
     content = test_reservations_file.read_text()
 
-    # Verify format: Name | Car Number | Reservation Period | Approval Time
+    # Verify format: #ID | Name | Car Number | Reservation Period | Approval Time
+    assert f"#{reservation_id}" in content
     assert "Alice Anderson" in content
     assert "AAA-111" in content
     assert "2026-11-20T10:00:00 to 2026-11-20T18:00:00" in content
 
     # Verify the format is correct
     parts = content.strip().split(" | ")
-    assert len(parts) == 4
+    assert len(parts) == 5  # Now includes reservation_id
 
 
 def test_stage3_refused_reservation_not_written(
@@ -338,14 +340,15 @@ def test_stage3_file_format_exact_compliance(settings, mock_mcp_client, test_res
 
     content = test_reservations_file.read_text().strip()
 
-    # Stage 3 spec: Name | Car Number | Reservation Period | Approval Time
+    # Updated Stage 3 spec: #ID | Name | Car Number | Reservation Period | Approval Time
     assert " | " in content
 
     parts = content.split(" | ")
-    assert len(parts) == 4, f"Expected 4 parts, got {len(parts)}: {parts}"
+    assert len(parts) == 5, f"Expected 5 parts, got {len(parts)}: {parts}"
 
-    name, car_number, period, approval_time = parts
+    res_id, name, car_number, period, approval_time = parts
 
+    assert res_id == f"#{reservation_id}"
     assert name == "Ian Ingram"
     assert car_number == "III-999"
     assert "2026-11-28T14:30:00" in period

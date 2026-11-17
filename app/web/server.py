@@ -110,10 +110,15 @@ def index() -> str:
 @app.get("/health")
 def health() -> dict:
     bot = get_bot()
+    if not bot.settings.llm_configured:
+        llm_provider = "offline"
+    else:
+        llm_provider = bot.settings.llm_provider  # "openai" or "dial"
+
     return {
         "status": "ok",
         "vector_backend": bot.backend,
-        "llm": "dial" if bot.settings.llm_configured else "offline",
+        "llm": llm_provider,
     }
 
 

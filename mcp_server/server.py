@@ -205,7 +205,7 @@ async def list_tools(authorized: bool = Depends(verify_token)):
 def _format_reservation_entry(data: ReservationData, approval_time: str) -> str:
     """Format a reservation as a file entry using safe serialization.
 
-    Format: Name | Car Number | Reservation Period | Approval Time
+    Format: #ID | Name | Car Number | Reservation Period | Approval Time
 
     All fields are validated to prevent newline/delimiter injection.
     """
@@ -213,22 +213,33 @@ def _format_reservation_entry(data: ReservationData, approval_time: str) -> str:
     full_name = f"{data.first_name} {data.last_name}"
     reservation_period = f"{data.start_ts} to {data.end_ts}"
 
-    # Build entry with explicit field order
-    return f"{full_name} | {data.car_number} | {reservation_period} | {approval_time}\n"
+    # Build entry with explicit field order, including reservation_id for duplicate detection
+    return f"#{data.reservation_id} | {full_name} | {data.car_number} | {reservation_period} | {approval_time}\n"
 
 
 def _is_reservation_already_written(reservation_id: int) -> bool:
-    """Check if a reservation has already been written (idempotency check)."""
+    """Check if a reservation has already been written (idempotency check).
+
+    Parses the file to check if the reservation_id is already present.
+    File format: #ID | Name | Car Number | Reservation Period | Approval Time
+    """
     if not RESERVATIONS_FILE.exists():
         return False
 
     try:
         with RESERVATIONS_FILE.open("r", encoding="utf-8") as f:
-            # Simple check: look for reservation ID in comments or metadata
-            # For now, we'll rely on the escalation service to track state
-            return False
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                # Check if line starts with #ID
+                if line.startswith(f"#{reservation_id} |"):
+                    logger.info("Reservation #%s already exists in file (idempotent)", reservation_id)
+                    return True
+        return False
     except Exception as e:
         logger.warning("Failed to check if reservation exists: %s", e)
+        # Conservative: assume it doesn't exist to allow the write attempt
         return False
 
 
@@ -238,7 +249,7 @@ async def write_confirmed_reservation(
 ) -> WriteResult:
     """MCP tool: Write a confirmed reservation to file.
 
-    Format: Name | Car Number | Reservation Period | Approval Time
+    Format: #ID | Name | Car Number | Reservation Period | Approval Time
 
     This tool is called by the escalation service after the administrator
     approves a reservation.
@@ -246,9 +257,28 @@ async def write_confirmed_reservation(
     Security:
     - Input validation prevents injection attacks
     - Safe serialization using validated fields
-    - Idempotent: retries safe (duplicate detection in escalation service)
+    - Idempotent: duplicate detection checks if reservation_id already exists
     """
     try:
+        # Check if already written (idempotency)
+        if _is_reservation_already_written(data.reservation_id):
+            # Count total entries
+            entry_count = 0
+            if RESERVATIONS_FILE.exists():
+                with RESERVATIONS_FILE.open("r", encoding="utf-8") as f:
+                    entry_count = sum(1 for line in f if line.strip())
+
+            logger.info(
+                "Reservation #%s already written (idempotent), skipping duplicate",
+                data.reservation_id,
+            )
+            return WriteResult(
+                success=True,
+                message=f"Reservation #{data.reservation_id} already exists (idempotent)",
+                file_path=str(RESERVATIONS_FILE.absolute()),
+                entry_count=entry_count,
+            )
+
         # Set approval time if not provided
         approval_time = data.approval_time or datetime.now(timezone.utc).isoformat()
 

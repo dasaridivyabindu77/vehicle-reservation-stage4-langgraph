@@ -14,7 +14,7 @@ Successfully fixed and completed the Vehicle Reservation System addressing **all
 - ❌ No configuration validation or startup errors
 
 ### Phase 2: Stage 1 - Chatbot, Retrieval, and Guardrails
-- ❌ Guardrails used only regex, not NLP-based approach
+- ❌ Guardrails used only basic regex without context awareness
 - ❌ Phone number detection matched dates and timestamps
 - ❌ ISO timestamps redacted from booking confirmations
 - ❌ Location questions ("Where are you located?") refused incorrectly
@@ -63,8 +63,8 @@ Successfully fixed and completed the Vehicle Reservation System addressing **all
 
 **Guardrails Improvements:**
 - Enhanced phone regex to be more precise
-- Added NLP-based contextual analysis:
-  - `_is_timestamp_or_date()` - checks if match is within timestamp/date
+- Added context-aware regex with heuristics for better accuracy:
+  - `_is_timestamp_or_date()` - checks if match is within timestamp/date pattern
   - `_is_likely_phone_number()` - uses heuristics (digit count, formatting)
 - ISO timestamps now preserved: `2026-11-20T10:00:00Z`
 - Date strings preserved: `2026-11-20`
@@ -186,7 +186,7 @@ Successfully fixed and completed the Vehicle Reservation System addressing **all
 - `tests/test_config.py` - Expanded tests
 
 **Phase 2:**
-- `app/guardrails.py` - NLP-based phone detection
+- `app/guardrails.py` - Context-aware phone detection
 - `app/relevance.py` - Fuzzy word matching
 - `app/chatbot.py` - Increased retrieval in offline mode
 - `tests/test_guardrails.py` - Comprehensive security tests
@@ -222,7 +222,7 @@ Successfully fixed and completed the Vehicle Reservation System addressing **all
 
 ### After:
 - **Multi-provider LLM support** - Runtime switching between DIAL and OpenAI
-- **Enhanced guardrails** - NLP-based contextual analysis
+- **Enhanced guardrails** - Context-aware regex with heuristics
 - **Precise PII detection** - Distinguishes phone numbers from timestamps
 - **Secure MCP authentication** - Mandatory with constant-time comparison
 - **Retry mechanism** - Exponential backoff for temporary failures
@@ -435,7 +435,7 @@ python -m app.admin.cli
 ### Phase 2: Stage 1 - Chatbot, Retrieval, and Guardrails
 ✅ Dates and timestamps not incorrectly redacted as phone numbers  
 ✅ Location questions retrieve relevant knowledge-base information  
-✅ NLP-based phone detection distinguishes actual phones from timestamps  
+✅ Context-aware phone detection distinguishes actual phones from timestamps  
 ✅ Appropriate refusal behavior for genuinely unrelated questions  
 ✅ Tests cover normal questions, malicious inputs, PII, dates, timestamps  
 

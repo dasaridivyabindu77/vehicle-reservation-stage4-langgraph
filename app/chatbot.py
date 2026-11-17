@@ -184,15 +184,9 @@ class Chatbot:
             session, message, store=self.sql, session_id=session_id
         )
 
-        # Stage 2: when the booking is complete, escalate it to the administrator.
-        # Only escalate once per reservation (prevent duplicate submissions).
-        if result.reservation_ready and session.reservation_id and not session.escalated:
-            try:
-                self.escalation.submit(session.reservation_id)
-                session.escalated = True  # Mark as escalated to prevent duplicates
-                logger.info("Escalated reservation #%s to administrator", session.reservation_id)
-            except Exception as exc:  # noqa: BLE001 - never crash a turn
-                logger.warning("Escalation failed for #%s (%s)", session.reservation_id, exc)
+        # Stage 2: Escalation is handled by the orchestration graph (orchestration.py).
+        # The chatbot only tracks session state; escalate_to_admin_node() is the
+        # single point that calls escalation.submit() to prevent duplicates.
 
         return result.reply
 
