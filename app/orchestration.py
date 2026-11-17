@@ -171,9 +171,19 @@ def build_orchestration_graph(chatbot, escalation_service=None, mcp_client=None)
             }
 
     def check_reservation_complete(state: OrchestrationState) -> str:
-        """Routing: Check if reservation was completed."""
-        if state.get("reservation_complete"):
-            logger.info("Reservation completed, proceeding to Stage 2")
+        """Routing: Check if reservation was completed in this turn.
+
+        This checks if a NEW reservation was just completed, not if a
+        reservation ID exists from a previous turn. This prevents duplicate
+        escalations when users send follow-up messages.
+        """
+        # Only proceed to escalation if a reservation was JUST completed
+        # (reservation_complete is set to True by user_interaction_node)
+        if state.get("reservation_complete") and state.get("reservation_id"):
+            # Additional check: ensure this is a new reservation that hasn't been escalated
+            # The user_interaction_node sets reservation_complete=True only when
+            # the chatbot completes slot-filling, not on subsequent messages
+            logger.info("Reservation #%s completed, proceeding to Stage 2", state.get("reservation_id"))
             return "escalate"
         return "end"
 

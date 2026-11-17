@@ -1,0 +1,27 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-9.2.0, pluggy-1.7.0
+rootdir: C:\Users\DasariDivyaBindu\vehicle-reservation
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.16.0, langsmith-0.14.17, asyncio-1.4.1.post1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 111 items
+
+tests\test_admin_agent.py ......                                         [  5%]
+tests\test_admin_escalation.py ......                                    [ 10%]
+tests\test_admin_routes.py ........                                      [ 18%]
+tests\test_chatbot.py ......                                             [ 23%]
+tests\test_config.py ...........                                         [ 33%]
+tests\test_embeddings.py ...                                             [ 36%]
+tests\test_guardrails.py ...........                                     [ 45%]
+tests\test_load.py .....                                                 [ 50%]
+tests\test_mcp_server.py .................                               [ 65%]
+tests\test_orchestration.py ............                                 [ 76%]
+tests\test_relevance.py ......                                           [ 81%]
+tests\test_reservation.py ....                                           [ 85%]
+tests\test_sql_store.py ...                                              [ 88%]
+tests\test_stage3_integration.py .......                                 [ 94%]
+tests\test_vectorstore.py ...                                            [ 97%]
+tests\test_web.py ...                                                    [100%]
+
+======================= 111 passed in 61.68s (0:01:01) ========================

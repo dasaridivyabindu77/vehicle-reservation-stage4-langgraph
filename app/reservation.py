@@ -36,6 +36,7 @@ class ReservationSession:
     active: bool = False
     completed: bool = False
     reservation_id: Optional[int] = None
+    escalated: bool = False  # Track if this reservation was escalated to admin
 
     def next_slot(self) -> Optional[str]:
         for slot in SLOTS:

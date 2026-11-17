@@ -185,9 +185,12 @@ class Chatbot:
         )
 
         # Stage 2: when the booking is complete, escalate it to the administrator.
-        if result.reservation_ready and session.reservation_id:
+        # Only escalate once per reservation (prevent duplicate submissions).
+        if result.reservation_ready and session.reservation_id and not session.escalated:
             try:
                 self.escalation.submit(session.reservation_id)
+                session.escalated = True  # Mark as escalated to prevent duplicates
+                logger.info("Escalated reservation #%s to administrator", session.reservation_id)
             except Exception as exc:  # noqa: BLE001 - never crash a turn
                 logger.warning("Escalation failed for #%s (%s)", session.reservation_id, exc)
 
