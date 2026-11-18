@@ -10,17 +10,38 @@ Two layers:
    base before it reaches the user, so a stray private record seeded into the
    vector store can never be echoed back.
 
-The detectors use a combination of regex patterns and NLP-based contextual analysis
-to distinguish actual PII from legitimate content like timestamps, dates, and IDs.
+The detectors use NLP-based entity recognition (via spaCy) with regex fallbacks
+for context-aware PII detection. The NLP layer provides machine learning-based
+understanding of entities like person names, phone numbers in context, and
+organizations. Regex patterns serve as fallbacks when NLP is unavailable or for
+simple pattern matching.
+
 ``redact`` accepts an ``allow`` set so the booking flow can echo back the *user's
 own* details that they just typed, without those being scrubbed.
+
+Requirements:
+    For full NLP capabilities:
+    pip install spacy
+    python -m spacy download en_core_web_sm
+
+    Falls back gracefully to regex-only if spaCy is not installed.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Iterable, Optional, Set
+
+# Import NLP detector (gracefully handles missing spaCy)
+try:
+    from .nlp_detector import get_nlp_detector, is_phone_number_nlp
+    NLP_AVAILABLE = True
+except ImportError:
+    NLP_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 
@@ -98,8 +119,25 @@ def _is_timestamp_or_date(text: str, match_start: int, match_end: int) -> bool:
     return False
 
 
-def _is_likely_phone_number(matched_text: str) -> bool:
-    """Use NLP-like heuristics to determine if a number sequence is likely a phone number."""
+def _is_likely_phone_number(text: str, matched_text: str, match_start: int) -> bool:
+    """Use NLP and heuristic rules to determine if a number sequence is likely a phone number.
+
+    Args:
+        text: Full text containing the match
+        matched_text: The matched number sequence
+        match_start: Start position of match in text
+
+    Returns:
+        True if likely a phone number
+    """
+    # Try NLP detection first if available
+    if NLP_AVAILABLE:
+        try:
+            return is_phone_number_nlp(text, matched_text)
+        except Exception as e:
+            logger.debug(f"NLP phone detection failed, falling back to heuristics: {e}")
+
+    # Fallback to heuristic rules
     # Remove all non-digit characters to count digits
     digits_only = re.sub(r'\D', '', matched_text)
     digit_count = len(digits_only)
@@ -159,7 +197,7 @@ def redact(text: str, allow: Optional[Iterable[str]] = None) -> str:
     # Redact government IDs (straightforward)
     redacted = GOV_ID_RE.sub(repl, redacted)
 
-    # Redact phone numbers with context awareness
+    # Redact phone numbers with NLP-enhanced context awareness
     def phone_repl(m: re.Match) -> str:
         # Skip if in allowlist
         if m.group(0).strip() in allow_set:
@@ -169,14 +207,43 @@ def redact(text: str, allow: Optional[Iterable[str]] = None) -> str:
         if _is_timestamp_or_date(text, m.start(), m.end()):
             return m.group(0)
 
-        # Apply NLP heuristics
-        if _is_likely_phone_number(m.group(0)):
+        # Apply NLP + heuristic analysis
+        if _is_likely_phone_number(text, m.group(0), m.start()):
             return "[REDACTED]"
 
         # Not confident it's a phone number, keep it
         return m.group(0)
 
     redacted = PHONE_RE.sub(phone_repl, redacted)
+
+    # Use NLP for additional entity detection if available
+    if NLP_AVAILABLE:
+        try:
+            detector = get_nlp_detector()
+            entities = []
+            line_offset = 0
+            for line in redacted.splitlines(keepends=True):
+                for entity in detector.extract_pii(line):
+                    if entity.label in ["PERSON", "ORG"]:
+                        entities.append(
+                            (
+                                line_offset + entity.start,
+                                line_offset + entity.end,
+                                entity.text,
+                                entity.confidence,
+                            )
+                        )
+                line_offset += len(line)
+
+            # Redact person names and organizations not already caught
+            for start, end, value, confidence in sorted(
+                entities, key=lambda entity: entity[0], reverse=True
+            ):
+                if value not in allow_set and confidence >= 0.8:
+                    redacted = redacted[:start] + "[REDACTED]" + redacted[end:]
+        except Exception as e:
+            logger.debug(f"NLP entity redaction failed: {e}")
+
     return redacted
 
 

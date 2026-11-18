@@ -1,7 +1,7 @@
 """Integration tests for Stage 3 - end-to-end reservation flow with MCP server."""
 
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pytest
 
@@ -11,6 +11,21 @@ from app.admin.escalation import EscalationService
 from app.admin.agent import AdminAgent
 from app.sql_store import DynamicDataStore, STATUS_CONFIRMED, STATUS_REFUSED
 from mcp_server.client import MCPClient
+
+
+def _get_future_timestamp(days_ahead: int, hour: int = 10, minute: int = 0) -> str:
+    """Generate a future ISO timestamp for testing.
+
+    Args:
+        days_ahead: Number of days in the future
+        hour: Hour of day (0-23)
+        minute: Minute (0-59)
+
+    Returns:
+        ISO timestamp string: "YYYY-MM-DDTHH:MM:SS"
+    """
+    future_dt = datetime.now() + timedelta(days=days_ahead)
+    return future_dt.strftime(f"%Y-%m-%dT{hour:02d}:{minute:02d}:00")
 
 
 @pytest.fixture
@@ -104,13 +119,13 @@ def test_stage3_confirmed_reservation_writes_to_file(
     admin_agent = AdminAgent(settings, None)  # offline mode
     escalation = EscalationService(sql, admin_agent, mock_mcp_client)
 
-    # Create a reservation
+    # Create a reservation with dynamic future dates
     reservation_id = sql.create_reservation(
         first_name="Alice",
         last_name="Anderson",
         car_number="AAA-111",
-        start_ts="2026-11-20T10:00:00",
-        end_ts="2026-11-20T18:00:00",
+        start_ts=_get_future_timestamp(days_ahead=7, hour=10),
+        end_ts=_get_future_timestamp(days_ahead=7, hour=18),
         session_id="test-session",
     )
 
@@ -130,7 +145,8 @@ def test_stage3_confirmed_reservation_writes_to_file(
     assert f"#{reservation_id}" in content
     assert "Alice Anderson" in content
     assert "AAA-111" in content
-    assert "2026-11-20T10:00:00 to 2026-11-20T18:00:00" in content
+    assert "T10:00:00 to" in content
+    assert "T18:00:00" in content
 
     # Verify the format is correct
     parts = content.strip().split(" | ")
@@ -152,8 +168,8 @@ def test_stage3_refused_reservation_not_written(
         first_name="Bob",
         last_name="Brown",
         car_number="BBB-222",
-        start_ts="2026-11-21T10:00:00",
-        end_ts="2026-11-21T18:00:00",
+        start_ts=_get_future_timestamp(days_ahead=8, hour=10),
+        end_ts=_get_future_timestamp(days_ahead=8, hour=18),
         session_id="test-session",
     )
 
@@ -186,18 +202,18 @@ def test_stage3_multiple_confirmed_reservations(
     escalation = EscalationService(sql, admin_agent, mock_mcp_client)
 
     reservations_data = [
-        ("Charlie", "Clark", "CCC-333", "2026-11-22T10:00:00", "2026-11-22T18:00:00"),
-        ("Diana", "Davis", "DDD-444", "2026-11-23T10:00:00", "2026-11-23T18:00:00"),
-        ("Eve", "Evans", "EEE-555", "2026-11-24T10:00:00", "2026-11-24T18:00:00"),
+        ("Charlie", "Clark", "CCC-333", 9),
+        ("Diana", "Davis", "DDD-444", 10),
+        ("Eve", "Evans", "EEE-555", 11),
     ]
 
-    for first, last, car, start, end in reservations_data:
+    for first, last, car, days_ahead in reservations_data:
         reservation_id = sql.create_reservation(
             first_name=first,
             last_name=last,
             car_number=car,
-            start_ts=start,
-            end_ts=end,
+            start_ts=_get_future_timestamp(days_ahead=days_ahead, hour=10),
+            end_ts=_get_future_timestamp(days_ahead=days_ahead, hour=18),
             session_id="test-session",
         )
         escalation.decide(reservation_id, "approve", decided_by="test-admin")
@@ -229,8 +245,8 @@ def test_stage3_without_mcp_client_still_works(settings):
         first_name="Frank",
         last_name="Foster",
         car_number="FFF-666",
-        start_ts="2026-11-25T10:00:00",
-        end_ts="2026-11-25T18:00:00",
+        start_ts=_get_future_timestamp(days_ahead=12, hour=10),
+        end_ts=_get_future_timestamp(days_ahead=12, hour=18),
         session_id="test-session",
     )
 
@@ -266,8 +282,8 @@ def test_stage3_mcp_failure_doesnt_block_approval(
         first_name="Grace",
         last_name="Green",
         car_number="GGG-777",
-        start_ts="2026-11-26T10:00:00",
-        end_ts="2026-11-26T18:00:00",
+        start_ts=_get_future_timestamp(days_ahead=13, hour=10),
+        end_ts=_get_future_timestamp(days_ahead=13, hour=18),
         session_id="test-session",
     )
 
@@ -300,8 +316,8 @@ def test_stage3_end_to_end_with_chatbot(settings, mock_mcp_client, test_reservat
         first_name="Hannah",
         last_name="Hill",
         car_number="HHH-888",
-        start_ts="2026-11-27T10:00:00",
-        end_ts="2026-11-27T18:00:00",
+        start_ts=_get_future_timestamp(days_ahead=14, hour=10),
+        end_ts=_get_future_timestamp(days_ahead=14, hour=18),
         session_id=session,
     )
 
@@ -331,8 +347,8 @@ def test_stage3_file_format_exact_compliance(settings, mock_mcp_client, test_res
         first_name="Ian",
         last_name="Ingram",
         car_number="III-999",
-        start_ts="2026-11-28T14:30:00",
-        end_ts="2026-11-28T17:45:00",
+        start_ts=_get_future_timestamp(days_ahead=15, hour=14, minute=30),
+        end_ts=_get_future_timestamp(days_ahead=15, hour=17, minute=45),
         session_id="test-session",
     )
 
@@ -351,8 +367,8 @@ def test_stage3_file_format_exact_compliance(settings, mock_mcp_client, test_res
     assert res_id == f"#{reservation_id}"
     assert name == "Ian Ingram"
     assert car_number == "III-999"
-    assert "2026-11-28T14:30:00" in period
-    assert "2026-11-28T17:45:00" in period
+    assert "T14:30:00" in period
+    assert "T17:45:00" in period
     assert "to" in period
     # Approval time should be an ISO timestamp
     assert len(approval_time) > 10  # Basic sanity check for timestamp

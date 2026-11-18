@@ -37,16 +37,45 @@ REFUSAL = (
 )
 
 _BOOKING_RE = re.compile(
-    r"\b(reserve|reservation|book(ing)?|park my car|park the car)\b", re.IGNORECASE
+    r"\b(reserve|reservation|book(?:ing)?|make a booking|park my car|"
+    r"park the car|parking (?:space|spot)|need (?:a )?parking)\b",
+    re.IGNORECASE,
 )
 _QUESTION_RE = re.compile(
     r"^(how|what|whats|what's|where|when|which|why|can|could|do|does|is|are|should|tell|explain)\b",
     re.IGNORECASE,
 )
+# Greetings may be elongated ("hiiiii", "helloooo", "heyyy") and can be
+# capitalised in any way. Optional "there" keeps "hi there" natural.
+_GREETING_RE = re.compile(
+    r"^(?:hi+|hello+|hey+|hiya+|yo+|howdy+|greetings|"
+    r"good\s+(?:morning|afternoon|evening|day))"
+    r"(?:\s+there)?[\s!?.,]*$",
+    re.IGNORECASE,
+)
 _CANCEL_WORDS = {"cancel", "stop", "quit", "exit", "nevermind", "never mind"}
+_RESET_WORDS = {"reset", "restart", "start over", "start again"}
+# CityPark topics that should be answered as information even while a booking
+# is in progress (a statement containing these is not a booking-field answer).
+_INFO_TOPIC_RE = re.compile(
+    r"\b(hour|hours|open|opens|opening|close|closes|closing|price|prices|"
+    r"cost|costs|fee|fees|rate|rates|tariff|availability|available|space|"
+    r"spaces|location|located|address|where|ev|charging|charger|"
+    r"accessibility|accessible|disabled|rules|policy|refund|payment|"
+    r"contact|phone|email|zone|zones|booking process|how do i book)\b",
+    re.IGNORECASE,
+)
 _STATUS_RE = re.compile(
     r"\b(status|booking status|reservation status|check my booking|"
     r"check my reservation)\b",
+    re.IGNORECASE,
+)
+# "Yes, confirm my booking" refers to an existing pending request rather than
+# starting a brand-new booking. Kept separate from _BOOKING_RE so a normal
+# "book a space" still starts the slot-filling flow.
+_CONFIRM_RE = re.compile(
+    r"\b(confirm|confirmed|submit|approve|go ahead|"
+    r"yes[,\s]+(?:please\s+)?(?:confirm|book|submit|reserve))\b",
     re.IGNORECASE,
 )
 _RESERVATION_ID_RE = re.compile(
@@ -55,10 +84,11 @@ _RESERVATION_ID_RE = re.compile(
 )
 _SMALLTALK = {
     "hi", "hello", "hey", "hiya", "yo",
-    "good morning", "good afternoon", "good evening",
+    "good morning", "good afternoon", "good evening", "good day",
     "thanks", "thank you", "thank",
     "help", "menu", "start",
-    "sure", "okay", "ok", "alright", "got it",
+    "sure", "okay", "ok", "alright", "got it", "got it thanks",
+    "great", "cool", "nice", "perfect", "yes", "yeah", "yep", "no", "nope",
 }
 
 # Prefix matches (no trailing \b) so plurals/inflections hit:
@@ -71,6 +101,31 @@ _PRICE_RE = re.compile(
     r"\b(pric|cost|how much|fee|rate|charg(?!ing|er)|tariff|expensiv)", re.IGNORECASE
 )
 _HOURS_RE = re.compile(r"\b(hour|open|clos|timing)", re.IGNORECASE)
+
+
+def _normalize_command(text: str) -> str:
+    """Lower-case a message and strip trailing punctuation for commands."""
+    return re.sub(r"[\s!?.,;:]+$", "", text.strip().lower())
+
+
+def _is_greeting(text: str) -> bool:
+    return bool(_GREETING_RE.match(text.strip()))
+
+
+def _is_smalltalk_text(text: str) -> bool:
+    """True for greetings/acknowledgements regardless of length or casing."""
+    normalized = _normalize_command(text)
+    if not normalized:
+        return False
+    if _is_greeting(normalized):
+        return True
+    if normalized in _SMALLTALK:
+        return True
+    # Compact forms such as "thankyou" and "gotit".
+    return normalized.replace(" ", "") in {
+        "thankyou", "thanks", "gotit", "goodmorning", "goodafternoon",
+        "goodevening", "goodday",
+    }
 
 
 @dataclass
@@ -142,22 +197,37 @@ class Chatbot:
     def classify(self, message: str, session_id: str) -> str:
         session = self._sessions.get(session_id)
         text = message.strip()
-        normalized = text.lower()
+        normalized = _normalize_command(text)
         if _STATUS_RE.search(text):
             return "status"
 
         # Handle booking commands while a reservation is active.
         if session is not None and session.active:
 
-            # Reset and cancellation commands belong to the booking flow.
-            if normalized in _CANCEL_WORDS or normalized in {"reset", "restart"}:
+            # Reset, restart and cancellation commands belong to the booking flow.
+            if normalized in _CANCEL_WORDS or normalized in _RESET_WORDS:
                 return "reserve"
 
-            # Allow users to ask information questions during booking.
-            if _QUESTION_RE.match(text) or text.endswith("?"):
+            # Greetings, acknowledgements and CityPark questions must not be
+            # consumed as the answer to the current booking field.
+            if _is_smalltalk_text(text):
+                return "info"
+            if (
+                _QUESTION_RE.match(text)
+                or text.endswith("?")
+                or _INFO_TOPIC_RE.search(text)
+            ):
                 return "info"
 
             # Otherwise, treat the message as the next booking answer.
+            return "reserve"
+
+        if normalized in _RESET_WORDS:
+            return "reserve"
+
+        # A confirmation refers to an existing request; send it through the
+        # reservation handler so it is attached instead of starting over.
+        if _CONFIRM_RE.search(text):
             return "reserve"
 
         # Start a new booking when the user expresses booking intent.
@@ -170,16 +240,58 @@ class Chatbot:
 
     def run_reservation(self, session_id: str, message: str) -> str:
         session = self._sessions.get(session_id)
+        normalized = _normalize_command(message)
+
+        # Confirming an existing pending request must not start a second
+        # booking. This also covers a process restart (no in-memory session)
+        # and an abandoned draft: the confirmation belongs to the reservation
+        # already stored for this chat.
+        if _CONFIRM_RE.search(message) and not _STATUS_RE.search(message):
+            pending = self.sql.get_latest_reservation_for_session(session_id)
+            if pending is not None and pending.status == "pending_admin":
+                if session is None or session.reservation_id != pending.id:
+                    session = ReservationSession(
+                        data={
+                            "first_name": pending.first_name,
+                            "last_name": pending.last_name,
+                            "car_number": pending.car_number,
+                            "start": pending.start_ts,
+                            "end": pending.end_ts,
+                        },
+                        active=False,
+                        completed=True,
+                        reservation_id=pending.id,
+                    )
+                    self._sessions[session_id] = session
+                return reservation.confirmation(session)
+
         if session is None or not session.active:
+            if normalized in _CANCEL_WORDS:
+                return "There's no booking in progress to cancel."
             session = reservation.start_session()
             self._sessions[session_id] = session
+            if normalized in _RESET_WORDS:
+                session.reset()
+                return reservation.reset_reply()
+            # The message that started the booking is intent, not a field value.
             return reservation.first_prompt()
-        if message.strip().lower() in _CANCEL_WORDS:
-                session.active = False
-                session.data.clear()
-                session.completed = False
-                session.reservation_id = None
-                return "No problem — I've cancelled that booking process. Anything else I can help with?"
+
+        # A greeting/acknowledgement is not a booking-field answer. The router
+        # normally sends these to the info path; this guard protects direct
+        # callers as well.
+        if _is_smalltalk_text(message):
+            return self._help_text()
+
+        # An explicit new booking request while a booking is in progress should
+        # not overwrite the current field (e.g. "book" becoming a first name).
+        if _BOOKING_RE.search(message) and normalized not in _RESET_WORDS:
+            slot = session.next_slot()
+            if slot is not None:
+                return (
+                    "We're already setting up your booking. "
+                    + reservation.PROMPTS[slot]
+                )
+
         result = reservation.ingest(
             session, message, store=self.sql, session_id=session_id
         )
@@ -256,16 +368,18 @@ class Chatbot:
         dynamic_context: str,
     ) -> Tuple[str, bool]:
         if self._is_smalltalk(message):
-            normalized = message.strip().lower().rstrip("!?.,")
+            normalized = _normalize_command(message)
 
-            if normalized in {"sure", "okay", "ok", "alright", "got it"}:
+            if normalized in {"sure", "okay", "ok", "alright", "got it",
+                              "yes", "yeah", "yep", "great", "cool", "nice",
+                              "perfect", "no", "nope"}:
                 return (
                     "Great! What would you like to know about CityPark? "
                     "Anything else I can help with?",
                     False
                 )
 
-            if normalized in {"thanks", "thank you", "thank"}:
+            if normalized in {"thanks", "thank you", "thank", "thankyou"}:
                 return "You're welcome! Happy to help with CityPark parking.", False
 
             return self._help_text(), False
@@ -292,7 +406,11 @@ class Chatbot:
 
     def guard_output(self, answer: str, session_id: str) -> str:
         session = self._sessions.get(session_id)
-        allow = list(session.data.values()) if session else None
+        allow = list(session.data.values()) if session else []
+        if session and session.data.get("first_name") and session.data.get("last_name"):
+            allow.append(
+                f"{session.data['first_name']} {session.data['last_name']}"
+            )
         return guardrails.redact(answer, allow=allow)
 
     # --- helpers ---
@@ -330,7 +448,7 @@ class Chatbot:
 
     @staticmethod
     def _is_smalltalk(message: str) -> bool:
-        return message.strip().lower().rstrip("!.") in _SMALLTALK
+        return _is_smalltalk_text(message)
 
     @staticmethod
     def _help_text() -> str:
@@ -340,6 +458,14 @@ class Chatbot:
             "and the rules — and I can take a parking reservation for you. "
             "Just ask, or say \"I'd like to book a space\"."
         )
+
+    def reservation_session(self, session_id: str) -> Optional[ReservationSession]:
+        """Return the booking session for ``session_id`` (or ``None``).
+
+        Public accessor used by the web layer to report accurate turn metadata
+        without reaching into private state or re-running a chat turn.
+        """
+        return self._sessions.get(session_id)
 
     def _active_session(self, session_id: str) -> bool:
         session = self._sessions.get(session_id)

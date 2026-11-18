@@ -46,7 +46,11 @@ def _load_mcp_token() -> str:
     return token
 
 MCP_SERVER_TOKEN = _load_mcp_token()
-RESERVATIONS_FILE = Path("confirmed_reservations.txt")
+
+# Data directory for file storage (configurable via environment variable)
+MCP_DATA_DIR = Path(os.getenv("MCP_DATA_DIR", "."))
+MCP_DATA_DIR.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
+RESERVATIONS_FILE = MCP_DATA_DIR / "confirmed_reservations.txt"
 
 app = FastAPI(
     title="CityPark MCP Server",

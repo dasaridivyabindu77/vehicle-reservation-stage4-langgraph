@@ -127,8 +127,14 @@ class DynamicDataStore:
 
     def __init__(self, path: str = "citypark.db") -> None:
         self.path = path
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
         self.conn.row_factory = sqlite3.Row
+
+        # Enable WAL mode for better concurrent access (except for :memory:)
+        if path != ":memory:":
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=NORMAL")  # Faster writes
+
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -290,6 +296,13 @@ class DynamicDataStore:
             (session_id,),
         ).fetchone()
         return self._row_to_reservation(row) if row else None
+
+    def get_session_for_reservation(self, reservation_id: int) -> Optional[str]:
+        """Get the session_id associated with a reservation."""
+        row = self.conn.execute(
+            "SELECT session_id FROM reservations WHERE id = ?", (reservation_id,)
+        ).fetchone()
+        return row["session_id"] if row and row["session_id"] else None
 
     def pending_reservations(self) -> List[Reservation]:
         rows = self.conn.execute(

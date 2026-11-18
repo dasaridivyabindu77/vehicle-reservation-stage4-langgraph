@@ -54,3 +54,41 @@ def test_greeting_gets_help_not_refusal(bot):
     resp = bot.chat("hello")
     assert resp.refused is False
     assert "citypark" in resp.reply.lower()
+
+
+def test_offline_location_questions_not_refused():
+    """Test Issue 2: Ensure location questions work in offline mode.
+
+    "Where are you located?" should retrieve the Location document from
+    the knowledge base and not be refused, even in offline mode with
+    weak embeddings.
+    """
+    from app.chatbot import Chatbot
+    from app.config import Settings
+
+    # Create bot in offline mode (no DIAL API key)
+    bot = Chatbot(Settings(dial_api_key='', sqlite_path=':memory:'), seed=True)
+
+    # Test location questions that should work with improved synonym matching
+    # Note: Questions with only stopwords (e.g., "how do I get there") won't work
+    # in offline mode due to lexical matching limitations
+    location_questions = [
+        ("where are you located", ["market street", "central station", "station"]),
+        ("what is your address", ["market street", "address", "15"]),
+        ("citypark location", ["market street", "located", "centre"]),
+    ]
+
+    for question, expected_keywords in location_questions:
+        response = bot.chat(question, 'test-session')
+
+        # Should not be refused
+        assert not response.refused, f"Location question refused: {question}"
+
+        # Should contain location information (at least one keyword)
+        reply_lower = response.reply.lower()
+        found = any(keyword in reply_lower for keyword in expected_keywords)
+        assert found, \
+            f"Response doesn't contain expected location info for: {question}\n" \
+            f"Expected any of: {expected_keywords}\nResponse: {response.reply}"
+
+    bot.close()

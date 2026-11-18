@@ -105,14 +105,21 @@ def test_complete_reservation_workflow(orchestrator):
     This should go through Stage 1 (reservation complete) and
     Stage 2 (escalation), but decision still pending.
     """
+    from datetime import datetime, timedelta
+
+    # Use dynamic future dates
+    future_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    start_time = f"{future_date} 10:00"
+    end_time = f"{future_date} 18:00"
+
     session_id = "test-session-3"
     messages = [
         "I'd like to reserve a spot",
         "Alice",
         "Smith",
         "ABC-123",
-        "2026-11-20 10:00",
-        "2026-11-20 18:00",
+        start_time,
+        end_time,
     ]
 
     state = None
@@ -155,14 +162,17 @@ def test_approved_reservation_with_mcp(chatbot, escalation_service):
     )
 
     # Complete a reservation
+    from datetime import datetime, timedelta
+    future_date = (datetime.now() + timedelta(days=8)).strftime("%Y-%m-%d")
+
     session_id = "test-session-4"
     messages = [
         "I want to book parking",
         "Bob",
         "Brown",
         "XYZ-789",
-        "2026-11-21 09:00",
-        "2026-11-21 17:00",
+        f"{future_date} 09:00",
+        f"{future_date} 17:00",
     ]
 
     state = None
@@ -319,14 +329,17 @@ def test_orchestration_with_all_stages(chatbot, escalation_service):
     )
 
     # Stage 1: Complete reservation
+    from datetime import datetime, timedelta
+    future_date = (datetime.now() + timedelta(days=9)).strftime("%Y-%m-%d")
+
     session_id = "full-workflow"
     messages = [
         "I want to reserve a spot",
         "Carol",
         "Clark",
         "TEST-123",
-        "2026-11-22 10:00",
-        "2026-11-22 18:00",
+        f"{future_date} 10:00",
+        f"{future_date} 18:00",
     ]
 
     final_state = None
@@ -352,3 +365,51 @@ def test_orchestration_with_all_stages(chatbot, escalation_service):
     summary = orchestrator.get_metrics_summary()
     assert summary["total_requests"] >= len(messages)
     assert summary["reservations_completed"] >= 1
+
+
+def test_no_duplicate_escalations_on_followup(orchestrator):
+    """Test Issue 4: Ensure follow-up messages don't create duplicate escalations.
+
+    After completing a reservation, sending another message (like "thanks")
+    should NOT trigger a second escalation.
+    """
+    from datetime import datetime, timedelta
+    future_date = (datetime.now() + timedelta(days=10)).strftime("%Y-%m-%d")
+
+    session_id = "no-dupe-test"
+    messages = [
+        "I'd like to reserve parking",
+        "David",
+        "Davis",
+        "XYZ-999",
+        f"{future_date} 09:00",
+        f"{future_date} 17:00",
+    ]
+
+    # Complete the reservation
+    for message in messages:
+        state = orchestrator.process_user_message(message, session_id)
+
+    # Verify reservation was completed and escalated
+    assert state.get("reservation_complete")
+    assert state.get("escalation_sent")
+    reservation_id = state.get("reservation_id")
+
+    # Count escalations before follow-up
+    pending_before = len(orchestrator.escalation_service.pending())
+
+    # Send a follow-up message (should NOT create duplicate escalation)
+    followup_state = orchestrator.process_user_message("thanks", session_id)
+
+    # Verify no new reservation was created
+    assert not followup_state.get("reservation_complete")
+    assert not followup_state.get("escalation_sent")
+
+    # Count escalations after follow-up (should be the same)
+    pending_after = len(orchestrator.escalation_service.pending())
+    assert pending_after == pending_before, "Follow-up message created duplicate escalation"
+
+    # Verify the original reservation still exists and is pending
+    reservation = orchestrator.escalation_service.get(reservation_id)
+    assert reservation is not None
+    assert reservation.status == "pending_admin"

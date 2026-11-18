@@ -54,6 +54,7 @@ class Settings(BaseSettings):
 
     # --- Dynamic data ---
     sqlite_path: str = "citypark.db"
+    checkpoint_db: str = "checkpoints.db"  # LangGraph checkpoint database
 
     # --- Retrieval & grounding ---
     top_k: int = 4

@@ -35,7 +35,7 @@
 
 **Guardrails Improvements:**
 - Enhanced phone number regex to be more precise
-- Added NLP-based contextual analysis to distinguish:
+- Added context-aware regex with heuristics to distinguish:
   - Actual phone numbers: `(555) 123-4567`, `+1 415 555 0100`
   - NOT phone numbers: ISO timestamps, dates, reservation IDs
 - Added `_is_timestamp_or_date()` and `_is_likely_phone_number()` helpers
@@ -207,7 +207,7 @@ To complete the project:
 ## Architecture Changes Made
 
 1. **Multi-provider LLM support:** Application now supports both EPAM DIAL and standard OpenAI with runtime switching
-2. **Enhanced guardrails:** NLP-based phone detection prevents false positives on timestamps
+2. **Enhanced guardrails:** Context-aware phone detection with heuristics prevents false positives on timestamps
 3. **Secure MCP authentication:** Mandatory auth with constant-time comparison, comprehensive input validation
 4. **Retry mechanism:** Exponential backoff retry for temporary MCP failures
 5. **Improved relevance matching:** Fuzzy word matching improves offline retrieval

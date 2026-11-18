@@ -79,6 +79,7 @@ class EscalationService:
         raw_decision: str,
         reason: Optional[str] = None,
         decided_by: str = "admin",
+        skip_mcp_write: bool = False,
     ) -> tuple[Reservation, AdminDecision]:
         """Apply the administrator's reply to a pending reservation.
 
@@ -86,8 +87,18 @@ class EscalationService:
         ``KeyError`` if the reservation doesn't exist and ``ValueError`` if it
         has already been decided.
 
-        Stage 3: If the decision is 'confirmed' and an MCP server is available,
-        writes the reservation details to persistent storage.
+        Stage 3: If skip_mcp_write is False and the decision is 'confirmed' and
+        an MCP server is available, writes the reservation details to persistent storage.
+
+        IMPORTANT: When using LangGraph orchestration_v2, set skip_mcp_write=True to avoid
+        duplicate writes. The graph's persist_to_mcp_node will handle the write instead.
+
+        Args:
+            reservation_id: ID of the reservation to decide
+            raw_decision: Admin's decision text
+            reason: Optional reason for the decision
+            decided_by: Identifier of who made the decision
+            skip_mcp_write: If True, skip MCP persistence (let graph handle it)
         """
         reservation = self.sql.get_reservation(reservation_id)
         if reservation is None:
@@ -107,7 +118,8 @@ class EscalationService:
         )
 
         # Stage 3: Write confirmed reservation to file via MCP server
-        if decision.status == STATUS_CONFIRMED and self.mcp_client:
+        # Skip if using LangGraph orchestration (graph will handle persistence)
+        if decision.status == STATUS_CONFIRMED and self.mcp_client and not skip_mcp_write:
             self._persist_to_mcp_with_retry(updated, decided_by)
 
         return updated, decision

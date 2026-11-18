@@ -30,6 +30,9 @@ from ..config import Settings
 if TYPE_CHECKING:
     from ..admin.escalation import EscalationService
 
+# Import graph resume function (will be lazy-loaded to avoid circular imports)
+_resume_graph_func = None
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -103,15 +106,59 @@ def decide(
     escalation: "EscalationService" = Depends(get_escalation_dep),
     _: None = Depends(require_admin_access),
 ):
-    """Apply the administrator's confirm/refuse decision."""
+    """Apply the administrator's confirm/refuse decision.
+
+    This now also resumes the LangGraph orchestration if a graph checkpoint exists.
+    """
     decision_lower = req.decision.strip().lower()
     if decision_lower not in {"approve", "refuse", "confirm", "reject", "decline"}:
         raise HTTPException(status_code=400, detail="decision must be 'approve' or 'refuse'")
 
     try:
+        # Check if LangGraph orchestration is being used (has session_id)
+        session_id = escalation.sql.get_session_for_reservation(reservation_id)
+        has_graph_checkpoint = session_id is not None
+
+        # Record decision in database
+        # Skip MCP write here if using LangGraph - the graph will handle persistence
         updated, parsed = escalation.decide(
-            reservation_id, req.decision, reason=req.reason, decided_by="admin-dashboard"
+            reservation_id,
+            req.decision,
+            reason=req.reason,
+            decided_by="admin-dashboard",
+            skip_mcp_write=has_graph_checkpoint  # Let graph handle MCP write
         )
+
+        # Try to resume graph execution if checkpoint exists
+        # This is a best-effort attempt - if no checkpoint exists, it's not an error
+        try:
+            # Lazy load to avoid circular import
+            global _resume_graph_func
+            if _resume_graph_func is None:
+                from ..orchestration_v2 import process_admin_decision_and_resume
+                from ..web.server import get_graph
+                _resume_graph_func = (process_admin_decision_and_resume, get_graph)
+
+            resume_func, get_graph_func = _resume_graph_func
+            graph = get_graph_func()
+
+            # session_id already retrieved above
+            if session_id and has_graph_checkpoint:
+                # Resume graph with decision
+                normalized_decision = "approved" if decision_lower in {"approve", "confirm"} else "refused"
+                resume_func(
+                    graph=graph,
+                    thread_id=session_id,
+                    decision=normalized_decision,
+                    reason=req.reason,
+                    decided_by="admin-dashboard"
+                )
+                logger.info("Graph resumed for session %s after admin decision", session_id)
+
+        except Exception as graph_error:
+            # Graph resume is best-effort - don't fail the decision if graph resume fails
+            logger.warning("Could not resume graph for reservation #%s: %s", reservation_id, graph_error)
+
         return DecisionReply(
             success=True,
             reservation_id=updated.id,

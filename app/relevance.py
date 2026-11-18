@@ -35,6 +35,19 @@ _STOPWORDS = {
     "citypark", "parking", "park",
 }
 
+# Synonym groups for semantic matching in offline mode
+# Maps words to their semantic equivalents for better lexical matching
+_SYNONYMS = {
+    "address": ["location", "located", "place", "where", "site"],
+    "location": ["address", "located", "place", "where", "site"],
+    "located": ["location", "address", "place", "where", "site"],
+    "price": ["cost", "fee", "rate", "charge", "tariff"],
+    "cost": ["price", "fee", "rate", "charge", "tariff"],
+    "open": ["available", "operating", "hour", "timing"],
+    "hour": ["time", "timing", "schedule", "open", "close"],
+    "available": ["free", "vacancy", "spot", "space"],
+}
+
 
 def content_words(text: str) -> set:
     return {t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS and len(t) > 1}
@@ -50,7 +63,7 @@ def _normalize_word(word: str) -> str:
 
 
 def _words_match(word1: str, word2: str) -> bool:
-    """Check if two words match, accounting for common variations."""
+    """Check if two words match, accounting for common variations and synonyms."""
     # Exact match
     if word1 == word2:
         return True
@@ -65,6 +78,22 @@ def _words_match(word1: str, word2: str) -> bool:
     # Prefix match for longer words (locat matches location, located, etc)
     if len(norm1) >= 4 and len(norm2) >= 4:
         if norm1.startswith(norm2) or norm2.startswith(norm1):
+            return True
+
+    # Synonym match for common semantic equivalents
+    if word1 in _SYNONYMS:
+        if word2 in _SYNONYMS[word1]:
+            return True
+        # Also check normalized versions of synonyms
+        if any(_normalize_word(syn).startswith(norm2) or norm2.startswith(_normalize_word(syn))
+               for syn in _SYNONYMS[word1]):
+            return True
+
+    if word2 in _SYNONYMS:
+        if word1 in _SYNONYMS[word2]:
+            return True
+        if any(_normalize_word(syn).startswith(norm1) or norm1.startswith(_normalize_word(syn))
+               for syn in _SYNONYMS[word2]):
             return True
 
     return False

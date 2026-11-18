@@ -122,3 +122,31 @@ def test_malicious_input_patterns():
         result = scan_input(pattern)
         assert result.allowed is False, f"Failed to block: {pattern}"
         assert result.reason is not None
+
+
+def test_phone_regex_does_not_corrupt_timestamps():
+    """Test Issue 1: Ensure phone regex doesn't corrupt ISO timestamps.
+
+    The regex should NOT match continuous digits within ISO timestamps like
+    "2026-11-20T10:00" where "2026112010" could be mistaken for a phone number.
+    """
+    from app.guardrails import redact
+
+    # Test case from Issue 1
+    text1 = "From: 2026-11-20T09:00"
+    result1 = redact(text1)
+    assert "[REDACTED]" not in result1, f"Incorrectly redacted timestamp: {result1}"
+    assert "2026-11-20T09:00" in result1
+
+    # More comprehensive test cases
+    test_cases = [
+        "Reservation from 2026-11-20T10:00 to 2026-11-20T18:00",
+        "Start: 2026-12-25T14:30:00Z",
+        "Booking at 2026-11-13T08:30 confirmed",
+        "From 2026-11-20T09:00:00+00:00 to 2026-11-20T17:00:00+00:00",
+    ]
+
+    for text in test_cases:
+        result = redact(text)
+        assert result == text, f"Timestamp was corrupted: {text} -> {result}"
+        assert "[REDACTED]" not in result, f"Timestamp was redacted: {text}"

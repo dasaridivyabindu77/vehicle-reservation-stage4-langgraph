@@ -4,6 +4,10 @@ langchain-core>=1.0,<2
 langchain-openai>=1.0,<2
 langgraph>=1.0,<2
 
+# NLP for guardrails (optional but recommended)
+# Install with: pip install spacy && python -m spacy download en_core_web_sm
+spacy>=3.7,<4
+
 # Vector database
 weaviate-client>=4.9,<5
 

@@ -23,11 +23,14 @@ from pydantic import BaseModel
 from ..admin import routes as admin_routes
 from ..chatbot import Chatbot
 from ..config import Settings, get_settings
+from ..orchestration_v2 import build_production_graph, process_admin_decision_and_resume
 
 logger = logging.getLogger(__name__)
 
 _bot: Chatbot | None = None
 _bot_lock = threading.Lock()
+_graph = None
+_graph_lock = threading.Lock()
 _INDEX = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
 
 
@@ -39,6 +42,19 @@ def get_bot() -> Chatbot:
             if _bot is None:  # double-checked locking
                 _bot = Chatbot()
     return _bot
+
+
+def get_graph():
+    """Return the singleton orchestration graph, building it at most once (thread-safe)."""
+    global _graph
+    if _graph is None:
+        with _graph_lock:
+            if _graph is None:  # double-checked locking
+                settings = get_settings()
+                bot = get_bot()  # Get singleton chatbot to prevent duplicate reservations
+                _graph = build_production_graph(settings, checkpointer_db=settings.checkpoint_db, chatbot=bot)
+                logger.info("Production orchestration graph initialized (checkpoint_db=%s)", settings.checkpoint_db)
+    return _graph
 
 
 @asynccontextmanager
@@ -122,16 +138,130 @@ def health() -> dict:
     }
 
 
+def _reply_text(state: dict) -> str:
+    """Extract the user-facing reply from a graph state.
+
+    ``chatbot_response`` is a ``ChatResponse`` dataclass in-process and may be
+    a serialised mapping after a checkpoint round-trip. ``__interrupt__`` means
+    the graph paused for administrator approval, in which case the reservation
+    confirmation from ``chatbot_response`` is the message the user should see.
+    """
+    for candidate in (state.get("final_response"), state.get("chatbot_response")):
+        if isinstance(candidate, str):
+            if candidate:
+                return candidate
+        elif candidate is not None:
+            reply = getattr(candidate, "reply", None)
+            if isinstance(reply, str) and reply:
+                return reply
+            if isinstance(candidate, dict) and candidate.get("reply"):
+                return str(candidate["reply"])
+            text = str(candidate)
+            if text:
+                return text
+    return ""
+
+
+def _waiting_for_admin(graph, config) -> bool:
+    """True when the thread is paused at the human-approval interrupt."""
+    try:
+        snapshot = graph.get_state(config)
+    except Exception:  # noqa: BLE001 - treat unknown state as runnable
+        return False
+    return bool(getattr(snapshot, "next", ()))
+
+
 @app.post("/chat", response_model=ChatReply)
 def chat(req: ChatRequest) -> ChatReply:
+    """Process chat message through LangGraph orchestration.
+
+    This endpoint uses the production orchestration graph with
+    interrupt/resume capabilities for human-in-the-loop approval. Each user
+    message is processed exactly once: if the graph has already run a turn we
+    never replay it through ``bot.chat`` (that would consume a booking answer
+    twice and corrupt the reservation state).
+    """
     bot = get_bot()
-    resp = bot.chat(req.message, session_id=req.session_id)
+
+    try:
+        graph = get_graph()
+    except Exception as exc:  # noqa: BLE001 - graph unavailable, use the bot
+        logger.error("Graph unavailable (%s); using direct chatbot", exc, exc_info=True)
+        resp = bot.chat(req.message, session_id=req.session_id)
+        return ChatReply(
+            reply=resp.reply,
+            intent=resp.intent,
+            refused=resp.refused,
+            blocked=resp.blocked,
+            in_reservation=resp.in_reservation,
+            sources=resp.sources,
+            latency_ms=resp.latency_ms,
+        )
+
+    # Execute graph with thread_id = session_id for checkpointing
+    config = {"configurable": {"thread_id": req.session_id}}
+
+    # A thread paused at the admin-approval interrupt must not treat the next
+    # user message as the administrator's decision. Keep the checkpoint intact
+    # (so the dashboard can still resume it) and answer this turn directly.
+    if _waiting_for_admin(graph, config):
+        resp = bot.chat(req.message, session_id=req.session_id)
+        return ChatReply(
+            reply=resp.reply,
+            intent=resp.intent,
+            refused=resp.refused,
+            blocked=resp.blocked,
+            in_reservation=resp.in_reservation,
+            sources=resp.sources,
+            latency_ms=resp.latency_ms,
+        )
+
+    try:
+        state = graph.invoke(
+            {
+                "user_message": req.message,
+                "session_id": req.session_id,
+            },
+            config=config,
+        )
+    except Exception as exc:  # noqa: BLE001 - never replay a partial turn
+        logger.error("Graph execution error: %s", exc, exc_info=True)
+        return ChatReply(
+            reply=(
+                "Sorry, I ran into a problem handling that. Please try again "
+                "or ask me for the CityPark office contact details."
+            ),
+            intent="error",
+            refused=False,
+            blocked=False,
+            in_reservation=bot._active_session(req.session_id),
+            sources=[],
+            latency_ms=0.0,
+        )
+
+    # Metadata from the turn (never a DB lookup for a session model that does
+    # not exist). ``chatbot_response`` may also be a ChatResponse object when
+    # the graph ran without a checkpoint round-trip.
+    turn = state.get("chatbot_response")
+    intent = state.get("user_intent")
+    if not isinstance(intent, str):
+        intent = getattr(turn, "intent", None)
+    if not isinstance(intent, str):
+        intent = turn.get("intent") if isinstance(turn, dict) else None
+    refused = bool(state.get("refused", getattr(turn, "refused", False)))
+    blocked = bool(state.get("blocked", getattr(turn, "blocked", False)))
+    sources = state.get("sources") or getattr(turn, "sources", None) or []
+    if isinstance(turn, dict):
+        refused = bool(turn.get("refused", refused))
+        blocked = bool(turn.get("blocked", blocked))
+        sources = turn.get("sources") or sources
+
     return ChatReply(
-        reply=resp.reply,
-        intent=resp.intent,
-        refused=resp.refused,
-        blocked=resp.blocked,
-        in_reservation=resp.in_reservation,
-        sources=resp.sources,
-        latency_ms=resp.latency_ms,
+        reply=_reply_text(state),
+        intent=intent or "info",
+        refused=refused,
+        blocked=blocked,
+        in_reservation=bot._active_session(req.session_id),
+        sources=sources,
+        latency_ms=float(state.get("total_duration_ms") or 0.0),
     )

@@ -144,15 +144,22 @@ def build_orchestration_graph(chatbot, escalation_service=None, mcp_client=None)
                 session_id=state["session_id"]
             )
 
-            # Check if reservation was completed
+            # Check if reservation was completed IN THIS TURN
+            # Only set reservation_complete if it was JUST finished, not if it existed before
             session = chatbot._sessions.get(state["session_id"])
             reservation_complete = False
             reservation_id = None
             reservation_data = None
 
-            if session and session.reservation_id:
+            if session and session.reservation_id and session.completed and not session.escalated:
+                # Mark as complete only if:
+                # 1. reservation_id exists (slot-filling finished)
+                # 2. completed flag is True (just finished)
+                # 3. not yet escalated (prevent duplicates)
                 reservation_complete = True
                 reservation_id = session.reservation_id
+                session.escalated = True  # Mark to prevent duplicate escalations
+
                 # Get reservation from database
                 db_reservation = chatbot.sql.get_reservation(reservation_id)
                 if db_reservation:
