@@ -50,8 +50,10 @@ def get_graph():
     if _graph is None:
         with _graph_lock:
             if _graph is None:  # double-checked locking
-                settings = get_settings()
                 bot = get_bot()  # Get singleton chatbot to prevent duplicate reservations
+                # Use the bot's settings so the graph's checkpointer, SQL store
+                # and chatbot always refer to the same configuration.
+                settings = bot.settings
                 _graph = build_production_graph(settings, checkpointer_db=settings.checkpoint_db, chatbot=bot)
                 logger.info("Production orchestration graph initialized (checkpoint_db=%s)", settings.checkpoint_db)
     return _graph

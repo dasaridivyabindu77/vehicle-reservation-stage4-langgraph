@@ -140,10 +140,12 @@ def decide(
                 _resume_graph_func = (process_admin_decision_and_resume, get_graph)
 
             resume_func, get_graph_func = _resume_graph_func
-            graph = get_graph_func()
 
             # session_id already retrieved above
             if session_id and has_graph_checkpoint:
+                # Only build/reuse the orchestration graph when this
+                # reservation actually belongs to a LangGraph thread.
+                graph = get_graph_func()
                 # Resume graph with decision
                 normalized_decision = "approved" if decision_lower in {"approve", "confirm"} else "refused"
                 resume_func(
